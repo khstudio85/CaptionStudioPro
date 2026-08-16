@@ -1,0 +1,25 @@
+{
+  "name": "caption-studio-pro",
+  "version": "1.0.0",
+  "description": "Professional Video Caption Editor",
+  "main": "main.js",
+  "author": "Your Name",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2",
+    "html-to-image": "^1.11.13"
+  },
+  "trustedDependencies": [
+    "electron",
+    "ffmpeg-static"
+  ]
+}
