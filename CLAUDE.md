@@ -3,7 +3,7 @@
 Guidance for Claude Code when working in this repository.
 
 ## What this is
-
+//comment  export fearture done
 **Caption Studio Pro** — a desktop (Electron) video caption editor. It transcribes
 audio, groups words into animated caption "groups", lets the user style them heavily
 (fonts, gradients, strokes, multi-layer shadows, glow, per-word highlight, 9 animation
