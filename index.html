@@ -746,21 +746,25 @@ body {
   letter-spacing: 0.5px;
 }
 .anim-props-body { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-.ap-row { display: flex; align-items: center; gap: 8px; }
-.ap-label { font-size: 10px; color: var(--text3); font-weight: 600; width: 88px; flex-shrink: 0; }
-.ap-val { font-size: 10px; color: var(--accent2); font-weight: 700; min-width: 34px; text-align: right; }
+/* Label + value on the top line; slider spans the FULL panel width below it
+   so it's never squeezed into a tiny strip. */
+.ap-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ap-label { font-size: 10px; color: var(--text3); font-weight: 600; flex: 1 1 auto; min-width: 0; }
+.ap-val { font-size: 10px; color: var(--accent2); font-weight: 700; min-width: 34px; text-align: right; flex: 0 0 auto; }
 .ap-slider {
-  flex: 1; min-width: 0; height: 3px;
+  flex: 1 1 100%; order: 3; width: 100%; min-width: 0; height: 5px;
   -webkit-appearance: none; appearance: none;
-  border-radius: 2px; background: var(--border2);
+  border-radius: 3px; background: var(--border2);
   outline: none; cursor: pointer; accent-color: var(--accent2);
 }
 .ap-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 13px; height: 13px; border-radius: 50%;
+  width: 15px; height: 15px; border-radius: 50%;
   background: var(--accent2); cursor: pointer;
   box-shadow: 0 0 5px rgba(108,71,255,0.5);
 }
+/* Keep select/color controls inline with their label (they don't need full width) */
+.ap-row .ap-select, .ap-row .ap-color { order: 2; }
 .ap-color {
   width: 26px; height: 20px; border-radius: 4px;
   border: 1.5px solid var(--border2); cursor: pointer;
@@ -5334,6 +5338,35 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 }
 .kb-slider-input::-webkit-outer-spin-button,
 .kb-slider-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+/* ── Sequence tabs (multi-sequence) ── */
+.seq-tab-bar {
+  display: none; align-items: center; gap: 4px;
+  padding: 4px 8px; background: var(--bg2, #14141c);
+  border-bottom: 1px solid var(--border, #2a2a3a);
+  overflow-x: auto; white-space: nowrap; flex-shrink: 0;
+}
+.seq-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 6px 6px 0 0;
+  background: var(--bg3, #1c1c26); color: var(--text2, #aaa);
+  border: 1px solid var(--border, #2a2a3a); border-bottom: none;
+  font-size: 12px; font-weight: 600; cursor: pointer; user-select: none;
+  transition: background .12s, color .12s;
+}
+.seq-tab:hover { background: rgba(108,71,255,0.12); color: var(--text, #fff); }
+.seq-tab.active { background: var(--accent, #6c47ff); color: #fff; }
+.seq-tab-close {
+  font-size: 14px; line-height: 1; opacity: .6; border-radius: 3px; padding: 0 2px;
+}
+.seq-tab-close:hover { opacity: 1; background: rgba(255,77,109,0.4); }
+.seq-tab-add {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer;
+  background: var(--bg3, #1c1c26); color: var(--text2, #aaa);
+  border: 1px dashed var(--border2, #3a3a4a); font-size: 15px; font-weight: 700;
+}
+.seq-tab-add:hover { color: var(--accent2, #9d7eff); border-color: var(--accent2, #9d7eff); }
 </style>
 </head>
 <body>
@@ -5626,7 +5659,13 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
         <button class="tl-mini-btn danger" id="miniDelClip" onclick="selectedClipId && (saveHistory(), rippleDeleteClip(selectedClipId))" title="Delete selected clip (Delete key)" disabled>
           🗑 Del Clip <span class="mk">Del</span>
         </button>
+        <div class="tl-mini-sep"></div>
+        <button class="tl-mini-btn" id="miniNewSeq" onclick="createSequence()" title="Create a new sequence (separate timeline, captions & canvas)">
+          🆕 New Sequence
+        </button>
       </div>
+      <!-- Sequence tabs (shown when 2+ sequences exist) -->
+      <div class="seq-tab-bar" id="seqTabBar"></div>
       <div class="timeline-scroll" id="timelineScroll"
            ondragover="clipDragOver(event)"
            ondragleave="clipDragLeave(event)"
@@ -8390,7 +8429,7 @@ function clearCaptionPreview() {
   disp.style.visibility  = 'hidden';
   // ✅ Preserve the canvas-space transform so position stays correct when content reappears
   requestAnimationFrame(applyPreviewTransform);
-  hideCaptionBgBar();
+  hideCaptionBgBar(true);   // caption cleared → always hide the bg bar
 }
 
 // ── Find group index at time t — accurate sync ──
@@ -9061,7 +9100,7 @@ document.addEventListener('DOMContentLoaded', () => {
           updateLayerSelectionUI();
         }
         // Seek audio to this layer
-        if(audio) { audio.currentTime = wordGroups[gi].start + 0.01; currentGroup = -2; lastActiveWord = -2; onTimeUpdate(); }
+        if(audio && wordGroups[gi]) { audio.currentTime = wordGroups[gi].start + 0.01; currentGroup = -2; lastActiveWord = -2; onTimeUpdate(); }
       }
       return;
     }
@@ -9845,7 +9884,7 @@ function renderGroup(idx) {
     disp.dataset.animStyle = '';
     disp.innerHTML         = '';
     disp.style.opacity     = '0';
-    hideCaptionBgBar();
+    hideCaptionBgBar(true);   // no active group → always hide the bg bar
     // ✅ Still apply transform so position is correct even when hidden
     requestAnimationFrame(applyPreviewTransform);
     return;
@@ -9917,6 +9956,11 @@ function renderGroup(idx) {
   disp.style.letterSpacing = Math.round((s.letterSpacing || 0) * _fontScale) + 'px';
   disp.style.background    = 'transparent';
   disp.style.padding       = '0';
+
+  // ── Caption background bar — style-independent (matches exported video) ──
+  // Shown for ANY animation style when the Text-panel bg toggle (alpha>0) is on.
+  // Per-style code may still call hideCaptionBgBar() but that no-ops while enabled.
+  if(s.captionBgAlpha > 0) showCaptionBgBar(disp, s);
 
   // ── Reset font baseline when group changes (fresh render) ──
   const _prevGroupIdx = disp.dataset.groupIdx;
@@ -11010,7 +11054,12 @@ function showCaptionBgBar(disp, s) {
 
   const p1      = animStyleProps[1] || {};
   const rad     = p1.barRadius ?? 8;
-  const bgAlpha = (p1.bgOpacity ?? 85) / 100;
+  // Opacity comes from the Text-panel caption-bg slider (captionBgAlpha), so the
+  // slider actually controls it and preview matches the exported video. Falls
+  // back to style-1's bgOpacity only if the slider value is unavailable.
+  const bgAlpha = (s && s.captionBgAlpha != null)
+    ? (s.captionBgAlpha / 100)
+    : ((p1.bgOpacity ?? 85) / 100);
   const inDur   = p1.inDuration ?? 200;
 
   // Set transition duration from animStyleProps
@@ -11045,9 +11094,16 @@ function showCaptionBgBar(disp, s) {
     }
   });
 }
-function hideCaptionBgBar() {
+function hideCaptionBgBar(force) {
   const bar = document.getElementById('captionBgBar');
   if(!bar) return;
+  // Caption background is a style-independent feature: when the user has it
+  // enabled (alpha>0), per-style render code should NOT hide it. Only force-hide
+  // when the caption itself goes away (no active group / preview cleared).
+  if(!force) {
+    const el = document.getElementById('captionBgAlpha');
+    if(el && (+el.value) > 0) return;
+  }
   const p1    = animStyleProps[1] || {};
   const outDur = p1.outDuration ?? 200;
   bar.style.transition = [
@@ -11815,6 +11871,14 @@ window._fileWaveforms = {}; // { fileId: Float32Array }
 
 async function _extractWaveformForFile(file, fileId) {
   try {
+    // Skip browser decode for very large files — reading multi-GB into memory
+    // throws NotReadableError and can crash the tab. Waveform is cosmetic.
+    const fileMB = (file.size || 0) / 1048576;
+    if(fileMB > 500) {
+      console.warn('[Waveform] Skipped for file ' + fileId + ' — too large (' + fileMB.toFixed(0) + 'MB) to decode in browser');
+      window._fileWaveforms[fileId] = null;
+      return;
+    }
     console.log('[Waveform] Extracting for file ' + fileId + ': ' + file.name);
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const ab = await file.arrayBuffer();
@@ -15344,18 +15408,40 @@ async function runOpenAIWhisper() {
     let blob;
     const trimIn  = clipForTx ? (clipForTx.trimIn  || 0)   : 0;
     const trimOut = clipForTx ? (clipForTx.trimOut  || null) : null;
-    const hasTrim = clipForTx && (trimIn > 0.5 || (trimOut !== null));
 
-    if(hasTrim && clipForTx) {
+    // Resolve a native path for FFmpeg extraction (handles any file size, and
+    // keeps the upload well under Whisper's 25MB limit via 16kHz mono WAV).
+    const pf2 = clipForTx
+      ? projectFiles.find(f => f.id === clipForTx.fileId)
+      : projectFiles.find(f => f.url === srcUrl);
+    let nativePath = pf2 && pf2.path ? pf2.path : null;
+    if(!nativePath && window.electronAPI && window.electronAPI.getFilePath && pf2 && pf2.file) {
+      try { nativePath = window.electronAPI.getFilePath(pf2.file); } catch(_) {}
+    }
+
+    if(window.electronAPI && window.electronAPI.extractAudioRegion && nativePath) {
       try {
-        const pf2  = projectFiles.find(f => f.id === clipForTx.fileId);
-        const file2 = pf2?.file || window._audioFile;
-        if(file2) {
+        updateProgress('Extracting audio via FFmpeg...', 25);
+        const res = await window.electronAPI.extractAudioRegion({
+          videoPath: nativePath, startTime: trimIn, endTime: trimOut
+        });
+        if(res && res.success && res.audioData) {
+          const u8 = res.audioData;
+          blob = new Blob([u8.buffer ? u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength) : u8], { type: 'audio/wav' });
+        }
+      } catch(e) { console.warn('Native audio extraction failed:', e); }
+    }
+
+    // Browser fallback (small files / non-Electron)
+    if(!blob) {
+      const file2 = pf2?.file || window._audioFile;
+      if(file2 && (trimIn > 0.5 || trimOut !== null)) {
+        try {
           blob = await extractAudioForUpload(file2, (msg, pct) => {
             updateProgress(msg, 15 + Math.round(pct * 0.15));
           }, trimIn, trimOut);
-        }
-      } catch(_) {}
+        } catch(_) {}
+      }
     }
     if(!blob) {
       const resp = await fetch(srcUrl);
@@ -15904,29 +15990,74 @@ async function runAssemblyAI() {
       // Both 'audio' and 'full' modes should respect trim boundaries
       const tIn  = clip.trimIn  || 0;
       const tOut = clip.trimOut != null ? clip.trimOut : null;
-      
+      // True once we've extracted only the trimmed region → API timestamps are
+      // 0-based from the region start (drives the offset math further down).
+      let extractedTrimmedRegion = false;
+
       // Guard against split-created clips with near-zero duration
       const clipVisibleDur = clip.timelineEnd - clip.timelineStart;
       if(clipVisibleDur < 1.0) {
         updateProgress(`Clip ${ci+1}: too short (${clipVisibleDur.toFixed(2)}s) — skip`, progBase + 2);
         continue;
       }
-      
+
       if(tOut !== null && tOut - tIn < 0.5) {
         updateProgress(`Clip ${ci+1}: trimIn≥trimOut — skip`, progBase + 2);
         continue;
       }
-      
+
+      // Resolve a native filesystem path so we can extract audio via FFmpeg in
+      // the main process — this handles files of ANY size (streams from disk),
+      // unlike the browser decoder which chokes / throws NotReadableError on
+      // multi-GB files.
+      let nativePath = pf.path || null;
+      if(!nativePath && window.electronAPI && window.electronAPI.getFilePath && pf.file) {
+        try { nativePath = window.electronAPI.getFilePath(pf.file); } catch(_) {}
+      }
+
+      const canNativeExtract = !!(window.electronAPI && window.electronAPI.extractAudioRegion && nativePath);
+
       try {
-        // Extract trimmed audio region — this ensures only visible section is uploaded
-        const wavBlob = await extractAudioForUpload(file, (msg, pct) => {
-          updateProgress(msg, progBase + Math.round(pct * 0.15));
-        }, tIn, tOut);
-        uploadArrayBuffer = await wavBlob.arrayBuffer();
-        updateProgress(`Clip ${ci+1}: Trimmed region extracted (${fmtDur(clipVisibleDur)})`, progBase + 7);
+        if(canNativeExtract) {
+          // ── Native FFmpeg extraction (any file size) ──
+          updateProgress(`Clip ${ci+1}: Extracting audio via FFmpeg (${fmtDur(clipVisibleDur)})...`, progBase + 3);
+          const res = await window.electronAPI.extractAudioRegion({
+            videoPath: nativePath,
+            startTime: tIn,
+            endTime:   tOut   // null → to end of file (handled in main.js)
+          });
+          if(!res || !res.success || !res.audioData) {
+            throw new Error(res && res.error ? res.error : 'native extraction returned no audio');
+          }
+          // Electron serializes the Node Buffer as a Uint8Array in the renderer.
+          const u8 = res.audioData;
+          uploadArrayBuffer = u8.buffer
+            ? u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength)
+            : u8;
+          extractedTrimmedRegion = true;
+          updateProgress(`Clip ${ci+1}: Audio extracted (${(uploadArrayBuffer.byteLength/1048576).toFixed(1)}MB WAV)`, progBase + 7);
+        } else {
+          // ── Browser decode path (small files / non-Electron) ──
+          const wavBlob = await extractAudioForUpload(file, (msg, pct) => {
+            updateProgress(msg, progBase + Math.round(pct * 0.15));
+          }, tIn, tOut);
+          uploadArrayBuffer = await wavBlob.arrayBuffer();
+          extractedTrimmedRegion = true;
+          updateProgress(`Clip ${ci+1}: Trimmed region extracted (${fmtDur(clipVisibleDur)})`, progBase + 7);
+        }
       } catch(extractErr) {
-        console.warn('Trim extraction failed, uploading full file:', extractErr);
+        console.warn('Audio extraction failed:', extractErr);
+        // Last resort: upload the full original file. Guard against multi-GB
+        // files the browser cannot read into memory.
+        const fileMB = (file.size || 0) / 1048576;
+        if(fileMB > 1500) {
+          throw new Error(
+            `Audio extraction failed and the file is too large (${fileMB.toFixed(0)}MB) to upload whole. ` +
+            `(${extractErr.message || extractErr})`
+          );
+        }
         uploadArrayBuffer = await file.arrayBuffer();
+        extractedTrimmedRegion = false; // full file uploaded → offset must subtract trimIn
       }
 
       updateProgress(`Clip ${ci+1}: AssemblyAI pe upload ho raha hai...`, progBase + 8);
@@ -15989,9 +16120,9 @@ async function runAssemblyAI() {
       // So timeline position = clip.timelineStart + (apiTime / 1000).
       // (No trimIn subtraction needed — the trimmed audio starts at t=0.)
       //
-      // Exception: when _acmUploadMode !== 'audio' (Full File mode), the entire
-      // original file is uploaded, so we still need: offset = timelineStart - trimIn.
-      const isExtractMode = (_acmUploadMode === 'audio');
+      // Exception: when the full original file was uploaded (extraction failed),
+      // API times are file-relative, so we still need: offset = timelineStart - trimIn.
+      const isExtractMode = extractedTrimmedRegion;
       const offsetSec = isExtractMode
         ? clip.timelineStart              // trimmed audio → API time is 0-based from clip start
         : clip.timelineStart - (clip.trimIn || 0); // full file → subtract trimIn
@@ -17775,8 +17906,29 @@ function showExportFormatModal() {
 // PROFESSIONAL EXPORT UI — Premiere Pro style
 // ═══════════════════════════════════════════════════════════════
 
+// Resolve ground-truth metadata of the source video currently on the timeline.
+// Prefers ffprobe result (pf.meta); falls back to <video>-element dimensions.
+function _getActiveSourceMeta() {
+  try {
+    const clip = (typeof audioClips !== 'undefined' && audioClips.length) ? audioClips[0] : null;
+    if(!clip) return null;
+    const pf = projectFiles.find(f => f.id === clip.fileId);
+    if(!pf) return null;
+    if(pf.meta) return pf.meta;
+    if(pf.videoWidth && pf.videoHeight) {
+      return { width: pf.videoWidth, height: pf.videoHeight, fps: null };
+    }
+    return null;
+  } catch(_) { return null; }
+}
+
 function showProfessionalExportModal() {
   return new Promise((resolve) => {
+    const _srcMeta = _getActiveSourceMeta();
+    const _origResLabel = (_srcMeta && _srcMeta.width && _srcMeta.height)
+      ? `Original (${_srcMeta.width}×${_srcMeta.height})` : 'Original';
+    const _origFpsLabel = (_srcMeta && _srcMeta.fps)
+      ? `Original (${_srcMeta.fps} fps)` : 'Original';
     // Remove any existing modal
     const existing = document.getElementById('proExportModal');
     if(existing) existing.remove();
@@ -17871,7 +18023,40 @@ function showProfessionalExportModal() {
               
             </div>
           </div>
-          
+
+          <!-- Resolution + FPS (default: Original / source preserved) -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+            <div>
+              <div style="font-size:11px;font-weight:800;color:#888;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;">Resolution</div>
+              <select id="expResolution" style="
+                width:100%;padding:10px 12px;border-radius:8px;
+                background:rgba(255,255,255,0.04);color:#fff;
+                border:1px solid rgba(255,255,255,0.1);font-size:13px;font-weight:600;cursor:pointer;
+              ">
+                <option value="original" selected>${_origResLabel}</option>
+                <option value="3840x2160">2160p (4K)</option>
+                <option value="2560x1440">1440p</option>
+                <option value="1920x1080">1080p</option>
+                <option value="1280x720">720p</option>
+              </select>
+            </div>
+            <div>
+              <div style="font-size:11px;font-weight:800;color:#888;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;">Frame Rate</div>
+              <select id="expFps" style="
+                width:100%;padding:10px 12px;border-radius:8px;
+                background:rgba(255,255,255,0.04);color:#fff;
+                border:1px solid rgba(255,255,255,0.1);font-size:13px;font-weight:600;cursor:pointer;
+              ">
+                <option value="original" selected>${_origFpsLabel}</option>
+                <option value="24">24 fps</option>
+                <option value="25">25 fps</option>
+                <option value="30">30 fps</option>
+                <option value="50">50 fps</option>
+                <option value="60">60 fps</option>
+              </select>
+            </div>
+          </div>
+
           <!-- Options -->
           <div style="
             background: rgba(255,255,255,0.03);
@@ -17964,7 +18149,9 @@ function showProfessionalExportModal() {
     document.getElementById('expStartBtn').addEventListener('click', () => {
       closeModal({
         quality: selectedQuality,
-        useGPU: document.getElementById('expUseGPU').checked
+        useGPU: document.getElementById('expUseGPU').checked,
+        resolution: document.getElementById('expResolution').value, // 'original' | 'WxH'
+        fps: document.getElementById('expFps').value                // 'original' | number-string
       });
     });
     
@@ -18272,11 +18459,40 @@ async function exportStyledVideo(format) {
     return;
   }
   
-  // Get resolution
+  // ═══ Resolve export resolution + fps ═══
+  // Priority: explicit user choice → original source metadata → canvas preset → 1080p30.
   const proj = projects.find(p => p.id === activeProjectId);
-  const resolution = (proj && proj.res) ? proj.res : '1920x1080';
-  const [expWidth, expHeight] = resolution.split('x').map(Number);
-  const fps = (proj && proj.fps) ? proj.fps : 30;
+  const srcMeta = _getActiveSourceMeta();
+
+  let resolution;
+  if(exportOptions.resolution && exportOptions.resolution !== 'original') {
+    resolution = exportOptions.resolution;
+  } else if(srcMeta && srcMeta.width && srcMeta.height) {
+    resolution = srcMeta.width + 'x' + srcMeta.height;   // preserve original by default
+  } else if(proj && proj.res) {
+    resolution = proj.res;
+  } else {
+    resolution = '1920x1080';
+  }
+  let [expWidth, expHeight] = resolution.split('x').map(Number);
+  // Guard against odd dimensions (yuv420p / most encoders require even W/H).
+  expWidth  -= (expWidth  % 2);
+  expHeight -= (expHeight % 2);
+  resolution = expWidth + 'x' + expHeight;
+
+  let fps;
+  if(exportOptions.fps && exportOptions.fps !== 'original') {
+    fps = parseFloat(exportOptions.fps);
+  } else if(srcMeta && srcMeta.fps) {
+    fps = srcMeta.fps;                                     // preserve original fps by default
+  } else if(proj && proj.fps) {
+    fps = proj.fps;
+  } else {
+    fps = 30;
+  }
+
+  console.log('[Export] Resolution:', resolution, '@', fps, 'fps',
+              '(source:', srcMeta ? (srcMeta.width + 'x' + srcMeta.height + '@' + srcMeta.fps) : 'unknown', ')');
   
   const trimIn = activeClip.trimIn || 0;
   const trimOut = activeClip.trimOut || (activeClip.timelineEnd - activeClip.timelineStart);
@@ -18291,9 +18507,19 @@ async function exportStyledVideo(format) {
   
   window.electronAPI.onExportProgress(updateExportProgress);
   
+  // ═══ Open a streaming export session (frames written to disk one-by-one) ═══
+  const initRes = await window.electronAPI.exportInit();
+  if(!initRes || !initRes.success) {
+    const progressModal = document.getElementById('proProgressModal');
+    if(progressModal) progressModal.remove();
+    alert('❌ Export failed:\n\nCould not start export session: ' + (initRes && initRes.error || 'unknown'));
+    return;
+  }
+  const sessionId = initRes.id;
+
   try {
-    // ═══ RENDER FRAMES ═══
-    const frameImages = await renderCaptionFrames(
+    // ═══ RENDER FRAMES → stream each to disk (memory-safe) ═══
+    const frameCount = await renderCaptionFrames(
       expWidth, expHeight, fps, duration, trimIn,
       (progress) => {
         updateExportProgress({
@@ -18302,16 +18528,20 @@ async function exportStyledVideo(format) {
           phase: 'prepare',
           timemark: (progress * duration).toFixed(1) + 's'
         });
+      },
+      async (index, dataUrl) => {
+        const r = await window.electronAPI.exportAddFrame({ id: sessionId, index, dataUrl });
+        if(!r || !r.success) throw new Error('Frame write failed: ' + (r && r.error || 'unknown'));
       }
     );
-    
-    console.log('[Export] Rendered', frameImages.length, 'frames');
-    
-    // ═══ EXPORT WITH FFMPEG ═══
-    const result = await window.electronAPI.exportFramesMode({
+
+    console.log('[Export] Streamed', frameCount, 'frames');
+
+    // ═══ ENCODE with FFMPEG (reads the PNG sequence from disk) ═══
+    const result = await window.electronAPI.exportEncode({
+      id: sessionId,
       videoPath: videoPath,
       outputPath: outputPath,
-      frameImages: frameImages,
       resolution: resolution,
       fps: fps,
       trimIn: trimIn,
@@ -18319,11 +18549,15 @@ async function exportStyledVideo(format) {
       quality: exportOptions.quality,
       useGPU: exportOptions.useGPU
     });
-    
-    if(result.success) {
+
+    if(result && result.success) {
       showExportSuccessModal(outputPath, result.fileSize, result.totalTime);
+    } else {
+      throw new Error((result && result.error) || 'Encode failed');
     }
   } catch(err) {
+    // Clean up any partial frames left on disk
+    try { await window.electronAPI.exportAbort({ id: sessionId }); } catch(_) {}
     const progressModal = document.getElementById('proProgressModal');
     if(progressModal) progressModal.remove();
     alert('❌ Export failed:\n\n' + (err.error || err.message || 'Unknown error'));
@@ -18340,172 +18574,77 @@ async function exportStyledVideo(format) {
 // Har style, animation, font, size perfectly captured
 // ═══════════════════════════════════════════════════════════════
 
-async function renderCaptionFrames(width, height, fps, duration, offsetTime, onProgress) {
+// Render caption overlay frames via the unified CaptionRenderer (canvas 2D).
+// Deterministic — draws each frame directly from the caption spec + animation
+// engine, so frames are never blank and preview↔export use the SAME renderer.
+// onFrame(index, dataUrl): optional async callback. When provided each frame is
+// streamed out and NOT retained (memory-safe). Otherwise frames are returned.
+async function renderCaptionFrames(width, height, fps, duration, offsetTime, onProgress, onFrame) {
   const totalFrames = Math.ceil(duration * fps);
   const frames = [];
-  
-  const captionDisplay = document.getElementById('captionDisplay');
-  const previewWrap = document.getElementById('previewWrap');
-  
-  if(!captionDisplay || !previewWrap) {
-    throw new Error('Preview elements not found');
+
+  if(typeof CaptionEngine === 'undefined' || !CaptionEngine.CaptionRenderer) {
+    throw new Error('CaptionEngine not loaded — refresh the app.');
   }
-  
-  if(typeof htmlToImage === 'undefined') {
-    throw new Error('html-to-image library not loaded. Refresh app.');
-  }
-  
-  const savedAudioTime = audio ? audio.currentTime : 0;
-  const wasPlaying = audio && !audio.paused;
-  if(wasPlaying && audio) audio.pause();
-  
-  // ═══ CRITICAL: Temporarily resize preview to target size ═══
-  const previewRect = previewWrap.getBoundingClientRect();
-  const originalWidth = previewWrap.style.width;
-  const originalHeight = previewWrap.style.height;
-  const originalMaxW = previewWrap.style.maxWidth;
-  const originalMaxH = previewWrap.style.maxHeight;
-  const originalPosition = previewWrap.style.position;
-  const originalTop = previewWrap.style.top;
-  const originalLeft = previewWrap.style.left;
-  const originalZIndex = previewWrap.style.zIndex;
-  const originalTransform = previewWrap.style.transform;
-  
-  console.log('[Export] Original preview:', previewRect.width + 'x' + previewRect.height);
-  console.log('[Export] Target export:', width + 'x' + height);
-  console.log('[Export] Total frames:', totalFrames);
-  
-  // Force preview to export size for perfect quality
-  previewWrap.style.width = width + 'px';
-  previewWrap.style.height = height + 'px';
-  previewWrap.style.maxWidth = 'none';
-  previewWrap.style.maxHeight = 'none';
-  previewWrap.style.position = 'fixed';
-  previewWrap.style.top = '-99999px';
-  previewWrap.style.left = '-99999px';
-  previewWrap.style.zIndex = '-9999';
-  previewWrap.style.transform = 'none';
-  
-  // Force re-render at new size
-  await new Promise(r => setTimeout(r, 100));
-  
-  // Hide UI elements
-  const elementsToHide = [
-    'captionDragHandle', 'captionGhostPin', 'captionDragGrid',
-    'captionPosBadge', 'videoModeTag'
-  ];
-  const savedDisplays = {};
-  elementsToHide.forEach(id => {
-    const el = document.getElementById(id);
-    if(el) {
-      savedDisplays[id] = el.style.display;
-      el.style.display = 'none';
-    }
-  });
-  
-  // Hide video element
-  const videoEl = document.getElementById('previewVideoEl');
-  const savedVideoDisplay = videoEl ? videoEl.style.display : null;
-  if(videoEl) videoEl.style.display = 'none';
-  
-  // Hide preview background
-  const previewBg = document.getElementById('previewBg');
-  const savedBgDisplay = previewBg ? previewBg.style.display : null;
-  if(previewBg) previewBg.style.display = 'none';
-  
-  // Hide canvas size label
-  const canvasSizeLabel = document.getElementById('canvasSizeLabel');
-  const savedLabelDisplay = canvasSizeLabel ? canvasSizeLabel.style.display : null;
-  if(canvasSizeLabel) canvasSizeLabel.style.display = 'none';
-  
+
+  // Snapshot the exact style the preview is using (single source of truth).
+  const spec = CaptionEngine.StyleCollector.fromUI();
+  const renderer = new CaptionEngine.CaptionRenderer();
+
+  // Fonts must be ready or the canvas renders with a fallback face (§6).
+  // Canvas 2D only uses already-loaded fonts, so force-load before rendering.
   try {
-    for(let f = 0; f < totalFrames; f++) {
-      const currentTime = offsetTime + (f / fps);
-      
-      // Update time to trigger caption render
-      if(audio) {
-        audio.currentTime = currentTime;
-        currentGroup = -2;
-        lastActiveWord = -2;
-        if(typeof onTimeUpdate === 'function') onTimeUpdate();
-      }
-      
-      // Wait for DOM to update
-      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await new Promise(r => setTimeout(r, 15));
-      
-      try {
-        // Capture at exact target size — NO scaling needed
-        const dataUrl = await htmlToImage.toPng(previewWrap, {
-          width: width,
-          height: height,
-          pixelRatio: 1,
-          backgroundColor: null,
-          cacheBust: true,
-          filter: (node) => {
-            if(!node.tagName) return true;
-            const tag = node.tagName.toLowerCase();
-            if(tag === 'video') return false;
-            if(node.id === 'captionDragHandle') return false;
-            if(node.id === 'captionGhostPin') return false;
-            if(node.id === 'captionDragGrid') return false;
-            if(node.id === 'captionPosBadge') return false;
-            if(node.id === 'previewBg') return false;
-            if(node.id === 'videoModeTag') return false;
-            if(node.id === 'canvasSizeLabel') return false;
-            return true;
-          }
-        });
-        
-        frames.push(dataUrl);
-        
-      } catch(captureErr) {
-        console.warn('Frame ' + f + ' capture error:', captureErr.message);
-        // Push transparent 1x1 as fallback
-        frames.push('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=');
-      }
-      
-      if(onProgress) onProgress(f / totalFrames);
-      
-      if(f % 3 === 0) {
-        await new Promise(r => setTimeout(r, 0));
+    if(document.fonts) {
+      const fam = (spec.fontFamily || '').replace(/['"]/g, '').split(',')[0].trim();
+      const decl = (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) + ' 64px "' + fam + '"';
+      try { await document.fonts.load(decl); } catch(_) {}
+      try { await document.fonts.ready; } catch(_) {}
+      if(!document.fonts.check(decl)) {
+        console.warn('[Export] Font "' + fam + '" (' + spec.fontWeight + ') not available to canvas — export may use a fallback face. ' +
+                     'Make sure this font/weight is loaded (Google Fonts <link> or a local @font-face).');
+      } else {
+        console.log('[Export] Font ready:', fam, spec.fontWeight);
       }
     }
-    
-    if(onProgress) onProgress(1);
-    
-  } finally {
-    // Restore preview size
-    previewWrap.style.width = originalWidth;
-    previewWrap.style.height = originalHeight;
-    previewWrap.style.maxWidth = originalMaxW;
-    previewWrap.style.maxHeight = originalMaxH;
-    previewWrap.style.position = originalPosition;
-    previewWrap.style.top = originalTop;
-    previewWrap.style.left = originalLeft;
-    previewWrap.style.zIndex = originalZIndex;
-    previewWrap.style.transform = originalTransform;
-    
-    // Restore UI
-    Object.keys(savedDisplays).forEach(id => {
-      const el = document.getElementById(id);
-      if(el) el.style.display = savedDisplays[id] || '';
-    });
-    if(videoEl) videoEl.style.display = savedVideoDisplay || '';
-    if(previewBg) previewBg.style.display = savedBgDisplay || '';
-    if(canvasSizeLabel) canvasSizeLabel.style.display = savedLabelDisplay || '';
-    
-    // Restore audio time
-    if(audio) {
-      audio.currentTime = savedAudioTime;
-      currentGroup = -2;
-      lastActiveWord = -2;
-      if(typeof onTimeUpdate === 'function') onTimeUpdate();
+  } catch(_) {}
+
+  // Offscreen canvas at the exact export resolution (transparent overlay).
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+
+  const groups = (typeof wordGroups !== 'undefined') ? wordGroups : [];
+  console.log('[Export] Rendering', totalFrames, 'frames @', width + 'x' + height,
+              '| style', spec.animationStyle, '| groups', groups.length,
+              '| offset', offsetTime);
+
+  let emptyCount = 0;
+  for(let f = 0; f < totalFrames; f++) {
+    const t = offsetTime + (f / fps);
+    // renderComposite clears the canvas, finds the active group at t, and draws it.
+    let hadActive = false;
+    for(let gi = 0; gi < groups.length; gi++) {
+      if(t >= groups[gi].start && t < groups[gi].end) { hadActive = true; break; }
     }
+    if(!hadActive) emptyCount++;
+    renderer.renderComposite(ctx, spec, groups, t, width, height, true);
+
+    const dataUrl = canvas.toDataURL('image/png');
+    if(onFrame) { await onFrame(f, dataUrl); }
+    else { frames.push(dataUrl); }
+
+    if(onProgress) onProgress(f / totalFrames);
+    if(f % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI responsive
   }
-  
-  console.log('[Export] Rendered ' + frames.length + ' frames at ' + width + 'x' + height);
-  return frames;
+  if(onProgress) onProgress(1);
+
+  const rendered = onFrame ? totalFrames : frames.length;
+  console.log('[Export] Rendered ' + rendered + ' frames (' + (rendered - emptyCount) + ' with captions, ' + emptyCount + ' empty gaps)');
+  if(rendered > 0 && emptyCount === rendered) {
+    console.warn('[Export] ⚠️ No frame had an active caption — check that group times overlap the exported range.');
+  }
+  return onFrame ? rendered : frames;
 }
 
 
@@ -20609,6 +20748,21 @@ async function addProjectFilesAndAutoTimeline(files) {
         if(isVideo) {
           entry.videoWidth = tmpEl.videoWidth || entry.videoWidth;
           entry.videoHeight = tmpEl.videoHeight || entry.videoHeight;
+
+          // Probe real source metadata (fps/codec/bitrate/pixfmt/audio) via ffprobe.
+          // Best-effort: falls back to the <video> element dims if unavailable.
+          if(nativePath && window.electronAPI && window.electronAPI.probeVideo) {
+            window.electronAPI.probeVideo(nativePath).then(res => {
+              if(res && res.success && res.meta) {
+                entry.meta = res.meta;
+                if(res.meta.width)  entry.videoWidth  = res.meta.width;
+                if(res.meta.height) entry.videoHeight = res.meta.height;
+                console.log('[probe]', entry.name, res.meta);
+              } else {
+                console.warn('[probe] failed for', entry.name, res && res.error);
+              }
+            }).catch(err => console.warn('[probe] error', err && err.message));
+          }
         }
         renderProjectPanel();
         
@@ -23949,6 +24103,330 @@ function rippleDeleteClip(clipId) {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// NEW SEQUENCE — full reset back to a blank project so the user can
+// import fresh footage and caption it from scratch. Clears ALL in-memory
+// state (footage, clips, captions, transcription, waveforms, selections)
+// and stops/detaches the preview media. Does NOT touch files on disk.
+// ─────────────────────────────────────────────────────────────────
+function newSequence() {
+  const hasWork = (typeof audioClips !== 'undefined' && audioClips.length) ||
+                  (typeof wordGroups !== 'undefined' && wordGroups.length) ||
+                  (typeof projectFiles !== 'undefined' && projectFiles.length);
+  if(hasWork && !confirm('Start a NEW sequence?\n\nThis clears the current footage, captions and timeline so you can import new footage. This cannot be undone.')) {
+    return;
+  }
+
+  // ── Stop playback loops ──
+  if(typeof animFrame !== 'undefined' && animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if(typeof _mcTickRaf !== 'undefined' && _mcTickRaf) { cancelAnimationFrame(_mcTickRaf); _mcTickRaf = null; }
+
+  // ── Stop + detach preview media ──
+  try { if(audio) audio.pause(); } catch(_) {}
+  const mainVid = document.getElementById('previewVideoEl');
+  if(mainVid) { try { mainVid.pause(); } catch(_) {} mainVid.removeAttribute('src'); try { mainVid.load(); } catch(_) {} mainVid.style.display = 'none'; }
+  audio = null;
+
+  // ── Clear all data state ──
+  audioClips   = [];
+  projectFiles = [];
+  wordGroups   = [];
+  if(typeof masterWords !== 'undefined') masterWords = [];
+  if(typeof words !== 'undefined') words = [];
+  if(typeof clipCaptionGroups !== 'undefined' && clipCaptionGroups) {
+    Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
+  }
+  window._fileWaveforms = {};
+  if(typeof waveformData !== 'undefined') waveformData = null;
+
+  // ── Selections ──
+  if(typeof selectedClipId !== 'undefined') selectedClipId = null;
+  if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.clear) selectedLayerIds.clear();
+  if(typeof selectedClipIds !== 'undefined' && selectedClipIds && selectedClipIds.clear) selectedClipIds.clear();
+  if(typeof selectedGi !== 'undefined') selectedGi = -1;
+  if(typeof selectedWi !== 'undefined') selectedWi = -1;
+  if(typeof primarySelectedId !== 'undefined') primarySelectedId = -1;
+  if(typeof currentGroup !== 'undefined') currentGroup = -1;
+
+  // ── Media bounds / virtual time ──
+  window._mediaEffectiveStart = 0;
+  window._mediaEffectiveEnd   = null;
+  window._trimEndEnforced      = false;
+  window._virtualT             = 0;
+  if(typeof _activePreviewClipId !== 'undefined') _activePreviewClipId = null;
+  window._isVideoMode  = false;
+  window._isAudioPaused = true;
+  window._audioFileName = null;
+  window._audioFile     = null;
+
+  // ── Undo/redo ──
+  if(typeof undoStack !== 'undefined') undoStack = [];
+  if(typeof redoStack !== 'undefined') redoStack = [];
+
+  // ── Clear caption preview + waveform strip ──
+  if(typeof clearCaptionPreview === 'function') clearCaptionPreview();
+  const strip = document.getElementById('waveformStrip'); if(strip) strip.innerHTML = '';
+
+  // ── Rebuild UI from the now-empty state ──
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(typeof buildTimeline === 'function') buildTimeline();
+  if(typeof renderProjectPanel === 'function') renderProjectPanel();
+  if(typeof refreshCaptionList === 'function') refreshCaptionList();
+
+  // ── Reset UI chrome ──
+  const btn = document.getElementById('playBtn'); if(btn) { btn.innerHTML = '▶'; btn.disabled = true; }
+  const acBtn = document.getElementById('autoCaptionBtn'); if(acBtn) acBtn.disabled = true;
+  const hint = document.getElementById('previewHint'); if(hint) hint.style.display = '';
+  const vmTag = document.getElementById('videoModeTag'); if(vmTag) vmTag.style.display = 'none';
+  const timeLabel = document.getElementById('timeLabel'); if(timeLabel) timeLabel.textContent = '0:00 / 0:00';
+  const tlInfo = document.getElementById('tlInfo'); if(tlInfo) tlInfo.textContent = 'Timeline empty — add clips to start';
+
+  showToast('🆕 New sequence — everything cleared. Import footage to start.');
+}
+
+// ═════════════════════════════════════════════════════════════════
+// MULTI-SEQUENCE ENGINE (Premiere/CapCut-style tabs)
+// Each sequence keeps its OWN footage, timeline, captions and canvas.
+// Additive: with only one sequence the app behaves exactly as before;
+// tabs appear once a 2nd sequence is created.
+// ═════════════════════════════════════════════════════════════════
+let sequences = [];          // [{ id, name, state }]
+let activeSequenceId = null;
+let _seqCounter = 0;
+
+function _seqEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+}
+
+// Snapshot the current working globals (by reference) into a plain object.
+function _captureSequenceState() {
+  return {
+    wordGroups, masterWords, words,
+    audioClips, projectFiles,
+    clipCaptionGroups: Object.assign({}, (typeof clipCaptionGroups !== 'undefined' ? clipCaptionGroups : {})),
+    fileWaveforms: window._fileWaveforms || {},
+    projects: (typeof projects !== 'undefined' ? projects : []),
+    activeProjectId: (typeof activeProjectId !== 'undefined' ? activeProjectId : null),
+    currentAnimStyle,
+    animStyleProps: (typeof animStyleProps !== 'undefined' ? animStyleProps : {}),
+    layerAnimStyles: (typeof layerAnimStyles !== 'undefined' ? layerAnimStyles : {}),
+    animApplyAll: (typeof animApplyAll !== 'undefined' ? animApplyAll : true),
+    shadows: (typeof shadows !== 'undefined' ? shadows : []),
+    wordsPerGroup, lineBreakEnabled, lineBreakAt,
+    captionBold, captionItalic, captionUnder, captionTextCase, captionAlign,
+    uiState: (typeof captureUIState === 'function' ? captureUIState() : null),
+    audioFile: window._audioFile || null,
+    audioFileName: window._audioFileName || null,
+    isVideoMode: !!window._isVideoMode,
+    mediaEffectiveStart: window._mediaEffectiveStart || 0,
+    mediaEffectiveEnd: window._mediaEffectiveEnd != null ? window._mediaEffectiveEnd : null,
+    activePreviewClipId: (typeof _activePreviewClipId !== 'undefined' ? _activePreviewClipId : null),
+    currentTime: (audio ? audio.currentTime : 0),
+  };
+}
+
+// Reset working globals to a blank sequence (does NOT touch stored snapshots —
+// arrays are REASSIGNED, so previously-captured references stay intact).
+function _clearWorkingState() {
+  if(typeof animFrame !== 'undefined' && animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if(typeof _mcTickRaf !== 'undefined' && _mcTickRaf) { cancelAnimationFrame(_mcTickRaf); _mcTickRaf = null; }
+  try { if(audio) audio.pause(); } catch(_) {}
+  const mv = document.getElementById('previewVideoEl');
+  if(mv) { try { mv.pause(); } catch(_) {} mv.remove(); }
+  audio = null;
+  audioClips = []; projectFiles = []; wordGroups = []; masterWords = []; words = [];
+  if(typeof clipCaptionGroups !== 'undefined') Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
+  window._fileWaveforms = {}; if(typeof waveformData !== 'undefined') waveformData = null;
+  if(typeof selectedClipId !== 'undefined') selectedClipId = null;
+  if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.clear) selectedLayerIds.clear();
+  if(typeof selectedGi !== 'undefined') selectedGi = -1;
+  if(typeof primarySelectedId !== 'undefined') primarySelectedId = -1;
+  if(typeof currentGroup !== 'undefined') currentGroup = -1;
+  window._mediaEffectiveStart = 0; window._mediaEffectiveEnd = null; window._virtualT = 0;
+  if(typeof _activePreviewClipId !== 'undefined') _activePreviewClipId = null;
+  window._isVideoMode = false; window._isAudioPaused = true;
+  window._audioFile = null; window._audioFileName = null;
+  if(typeof clearCaptionPreview === 'function') clearCaptionPreview();
+  const strip = document.getElementById('waveformStrip'); if(strip) strip.innerHTML = '';
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(typeof buildTimeline === 'function') buildTimeline();
+  if(typeof renderProjectPanel === 'function') renderProjectPanel();
+  if(typeof refreshCaptionList === 'function') refreshCaptionList();
+}
+
+// Re-create the preview <video> for a sequence's active clip.
+function _restorePreviewVideo(state) {
+  let file = null, url = null;
+  const clip = (audioClips && audioClips.length)
+    ? (audioClips.find(c => c.id === state.activePreviewClipId) || audioClips[0]) : null;
+  if(clip) { const pf = projectFiles.find(f => f.id === clip.fileId); if(pf) { file = pf.file; url = pf.url; } }
+  if(!file && state.audioFile) file = state.audioFile;
+
+  const pw = document.getElementById('previewWrap');
+  if(!file) {
+    window._isVideoMode = false; audio = null;
+    const bg = document.getElementById('previewBg'); if(bg) bg.style.display = '';
+    const hint = document.getElementById('previewHint'); if(hint) hint.style.display = '';
+    return;
+  }
+  if(!url) url = URL.createObjectURL(file);
+  const isVideo = (file.type && file.type.startsWith('video/')) || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name || '');
+  if(isVideo) {
+    const v = document.createElement('video');
+    v.id = 'previewVideoEl'; v.src = url; v.preload = 'auto'; v.playsInline = true;
+    v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;display:block;';
+    if(pw) pw.insertBefore(v, pw.firstChild);
+    const bg = document.getElementById('previewBg'); if(bg) bg.style.display = 'none';
+    const tag = document.getElementById('videoModeTag'); if(tag) tag.style.display = 'block';
+    audio = v; window._isVideoMode = true;
+    try { v.currentTime = state.currentTime || 0; } catch(_) {}
+  } else {
+    audio = new Audio(url); try { audio.currentTime = state.currentTime || 0; } catch(_) {}
+    window._isVideoMode = false;
+  }
+  window._audioFile = file; window._audioFileName = state.audioFileName || (file.name || '');
+  const hint = document.getElementById('previewHint'); if(hint) hint.style.display = 'none';
+  const btn = document.getElementById('playBtn'); if(btn) btn.disabled = false;
+}
+
+// Restore working globals from a captured snapshot.
+function _applySequenceState(state) {
+  if(!state) { _clearWorkingState(); return; }
+  if(typeof animFrame !== 'undefined' && animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
+  if(typeof _mcTickRaf !== 'undefined' && _mcTickRaf) { cancelAnimationFrame(_mcTickRaf); _mcTickRaf = null; }
+  try { if(audio) audio.pause(); } catch(_) {}
+  const mv = document.getElementById('previewVideoEl'); if(mv) { try { mv.pause(); } catch(_) {} mv.remove(); }
+  audio = null;
+
+  wordGroups = state.wordGroups || []; masterWords = state.masterWords || []; words = state.words || [];
+  audioClips = state.audioClips || []; projectFiles = state.projectFiles || [];
+  if(typeof clipCaptionGroups !== 'undefined') {
+    Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
+    Object.assign(clipCaptionGroups, state.clipCaptionGroups || {});
+  }
+  window._fileWaveforms = state.fileWaveforms || {};
+  if(state.projects && typeof projects !== 'undefined') projects = state.projects;
+  if(typeof activeProjectId !== 'undefined' && state.activeProjectId != null) activeProjectId = state.activeProjectId;
+  currentAnimStyle = state.currentAnimStyle || 0;
+  if(state.animStyleProps && typeof animStyleProps !== 'undefined') animStyleProps = state.animStyleProps;
+  if(state.layerAnimStyles && typeof layerAnimStyles !== 'undefined') layerAnimStyles = state.layerAnimStyles;
+  if(typeof animApplyAll !== 'undefined' && state.animApplyAll !== undefined) animApplyAll = state.animApplyAll;
+  if(state.shadows && typeof shadows !== 'undefined') shadows = state.shadows;
+  if(state.wordsPerGroup) wordsPerGroup = state.wordsPerGroup;
+  lineBreakEnabled = !!state.lineBreakEnabled; lineBreakAt = state.lineBreakAt || 1;
+  captionBold = !!state.captionBold; captionItalic = !!state.captionItalic; captionUnder = !!state.captionUnder;
+  if(state.captionTextCase) captionTextCase = state.captionTextCase;
+  if(state.captionAlign) captionAlign = state.captionAlign;
+  window._mediaEffectiveStart = state.mediaEffectiveStart || 0;
+  window._mediaEffectiveEnd = state.mediaEffectiveEnd != null ? state.mediaEffectiveEnd : null;
+  if(typeof _activePreviewClipId !== 'undefined') _activePreviewClipId = state.activePreviewClipId || null;
+  if(typeof currentGroup !== 'undefined') currentGroup = -2;
+  if(typeof selectedClipId !== 'undefined') selectedClipId = null;
+  if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.clear) selectedLayerIds.clear();
+
+  if(state.uiState && typeof restoreUIState === 'function') { try { restoreUIState(state.uiState); } catch(_) {} }
+  _restorePreviewVideo(state);
+
+  if(typeof renderShadowList === 'function') { try { renderShadowList(); } catch(_) {} }
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(typeof buildTimeline === 'function') buildTimeline();
+  if(typeof renderProjectPanel === 'function') renderProjectPanel();
+  if(typeof refreshCaptionList === 'function') refreshCaptionList();
+  const proj = (typeof projects !== 'undefined') ? projects.find(p => p.id === activeProjectId) : null;
+  if(proj && typeof applyCanvasAspect === 'function') { try { applyCanvasAspect(proj); } catch(_) {} }
+
+  if(wordGroups.length) {
+    const gi = (typeof getGroupAt === 'function') ? getGroupAt(state.currentTime || 0) : 0;
+    currentGroup = gi >= 0 ? gi : 0;
+    if(typeof renderGroup === 'function') renderGroup(currentGroup);
+  } else if(typeof clearCaptionPreview === 'function') {
+    clearCaptionPreview();
+  }
+}
+
+function createSequence() {
+  try {
+    // Lazily register the current working state as "Sequence 1" the first time.
+    if(sequences.length === 0) {
+      const s1 = { id: ++_seqCounter, name: 'Sequence 1', state: null };
+      sequences.push(s1);
+      activeSequenceId = s1.id;
+      s1.state = _captureSequenceState();
+    } else {
+      const cur = sequences.find(s => s.id === activeSequenceId);
+      if(cur) cur.state = _captureSequenceState();
+    }
+    const n = { id: ++_seqCounter, name: 'Sequence ' + (sequences.length + 1), state: null };
+    sequences.push(n);
+    activeSequenceId = n.id;
+    _clearWorkingState();
+    n.state = _captureSequenceState();
+    renderSequenceTabs();
+    showToast('🆕 ' + n.name + ' created — import footage to start');
+  } catch(err) {
+    console.error('[Sequence] create failed:', err);
+    showToast('❌ Could not create sequence: ' + err.message);
+  }
+}
+
+function switchSequence(id) {
+  if(id === activeSequenceId) return;
+  try {
+    const cur = sequences.find(s => s.id === activeSequenceId);
+    if(cur) cur.state = _captureSequenceState();
+    const target = sequences.find(s => s.id === id);
+    if(!target) return;
+    activeSequenceId = id;
+    _applySequenceState(target.state);
+    renderSequenceTabs();
+    showToast('▶ ' + target.name);
+  } catch(err) {
+    console.error('[Sequence] switch failed:', err);
+    showToast('❌ Could not switch sequence: ' + err.message);
+  }
+}
+
+function renameSequence(id) {
+  const s = sequences.find(x => x.id === id);
+  if(!s) return;
+  const name = prompt('Rename sequence:', s.name);
+  if(name && name.trim()) { s.name = name.trim(); renderSequenceTabs(); }
+}
+
+function deleteSequence(id) {
+  const s = sequences.find(x => x.id === id);
+  if(!s) return;
+  if(!confirm('Delete "' + s.name + '"? Its footage and captions in this sequence will be removed.')) return;
+  const wasActive = (id === activeSequenceId);
+  sequences = sequences.filter(x => x.id !== id);
+  if(sequences.length === 0) {
+    activeSequenceId = null;
+    _clearWorkingState();
+    renderSequenceTabs();
+    return;
+  }
+  if(wasActive) {
+    activeSequenceId = sequences[0].id;
+    _applySequenceState(sequences[0].state);
+  }
+  renderSequenceTabs();
+}
+
+function renderSequenceTabs() {
+  const bar = document.getElementById('seqTabBar');
+  if(!bar) return;
+  if(sequences.length <= 1) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = 'flex';
+  bar.innerHTML = sequences.map(s =>
+    `<div class="seq-tab ${s.id === activeSequenceId ? 'active' : ''}" data-sid="${s.id}"
+        onclick="switchSequence(${s.id})" ondblclick="renameSequence(${s.id})" title="Double-click to rename">
+       <span class="seq-tab-name">${_seqEsc(s.name)}</span>
+       <span class="seq-tab-close" onclick="event.stopPropagation();deleteSequence(${s.id})" title="Delete sequence">×</span>
+     </div>`).join('') +
+    `<div class="seq-tab-add" onclick="createSequence()" title="New sequence">＋</div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
 // _rippleRemapCaptions(deleteStart, deleteEnd, deleteDur)
 // Core caption remap after a range deletion:
 //   • Remove groups fully inside [deleteStart, deleteEnd]
@@ -25529,6 +26007,85 @@ function _applyResetPreset() {
     }
   });
   bodyObserver.observe(document.body, { childList: true, subtree: true });
+})();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PARITY HARNESS (dev-only) — compare CaptionRenderer (canvas)
+     against the live DOM preview before flipping export onto it.
+     Console:  __parity('overlay')  canvas only (DOM captions hidden)
+               __parity('diff')     canvas @50% over DOM (misalignment = doubling)
+               __parity('off')      remove
+     Shortcut: Ctrl+Shift+P cycles overlay → diff → off
+     ═══════════════════════════════════════════════════════════════ -->
+<script>
+(function(){
+  let mode = 'off';         // 'off' | 'overlay' | 'diff'
+  let raf = null;
+  let cv = null, cx = null, renderer = null;
+
+  function ensureCanvas() {
+    const pw = document.getElementById('previewWrap');
+    if(!pw) return null;
+    if(!cv) {
+      cv = document.createElement('canvas');
+      cv.id = '__parityCanvas';
+      cv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:50;';
+      pw.appendChild(cv);
+      cx = cv.getContext('2d');
+    }
+    return cv;
+  }
+
+  function tick() {
+    raf = requestAnimationFrame(tick);
+    if(mode === 'off') return;
+    if(typeof CaptionEngine === 'undefined' || !CaptionEngine.CaptionRenderer) return;
+    const pw = document.getElementById('previewWrap');
+    if(!pw) return;
+    if(!renderer) renderer = new CaptionEngine.CaptionRenderer();
+
+    // Backing store = preview CSS pixels (pixelRatio 1, matching export capture).
+    const W = Math.max(1, Math.round(pw.clientWidth));
+    const H = Math.max(1, Math.round(pw.clientHeight));
+    if(cv.width !== W)  cv.width  = W;
+    if(cv.height !== H) cv.height = H;
+    cv.style.opacity = (mode === 'diff') ? '0.5' : '1';
+
+    let spec;
+    try { spec = CaptionEngine.StyleCollector.fromUI(); } catch(e) { return; }
+    const t = (typeof audio !== 'undefined' && audio) ? audio.currentTime : 0;
+    const groups = (typeof wordGroups !== 'undefined') ? wordGroups : [];
+    try { renderer.renderComposite(cx, spec, groups, t, W, H, true); }
+    catch(e) { /* surface once */ if(!tick._warned){ console.warn('[parity] render error:', e); tick._warned = true; } }
+  }
+
+  window.__parity = function(m) {
+    mode = (m === 'overlay' || m === 'diff') ? m : 'off';
+    const disp = document.getElementById('captionDisplay');
+    if(mode === 'off') {
+      if(cv) cv.style.display = 'none';
+      if(disp) disp.style.visibility = '';
+      if(raf) { cancelAnimationFrame(raf); raf = null; }
+      console.log('[parity] off');
+      return;
+    }
+    ensureCanvas();
+    if(cv) cv.style.display = '';
+    // In overlay mode hide DOM captions so only the canvas shows; diff keeps both.
+    if(disp) disp.style.visibility = (mode === 'overlay') ? 'hidden' : '';
+    if(!raf) tick();
+    console.log('[parity] mode =', mode);
+  };
+
+  document.addEventListener('keydown', function(e){
+    if(e.ctrlKey && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
+      e.preventDefault();
+      window.__parity(mode === 'off' ? 'overlay' : mode === 'overlay' ? 'diff' : 'off');
+    }
+  });
+
+  console.log('%c[parity] harness ready — __parity("overlay"|"diff"|"off") or Ctrl+Shift+P', 'color:#9d7eff');
 })();
 </script>
 </body>

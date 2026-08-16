@@ -6,6 +6,16 @@ const ffmpegPath = require('ffmpeg-static');
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// ffmpeg-static ships only ffmpeg (no ffprobe). Point fluent-ffmpeg at the
+// bundled ffprobe binary so probe-video can read real source metadata.
+let ffprobePath = null;
+try {
+  ffprobePath = require('@ffprobe-installer/ffprobe').path;
+  ffmpeg.setFfprobePath(ffprobePath);
+} catch(err) {
+  console.warn('[ffprobe] not available:', err.message);
+}
+
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
 app.commandLine.appendSwitch('disable-http-cache');
 app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
@@ -77,6 +87,59 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
   } catch(err) {
     return { success: false, error: err.message, exists: false };
   }
+});
+
+// ═══════════════════════════════════════════
+// VIDEO METADATA PROBE (ffprobe)
+// Ground-truth source properties so export can
+// preserve original resolution / fps / codec.
+// ═══════════════════════════════════════════
+ipcMain.handle('probe-video', async (event, filePath) => {
+  if(!filePath) return { success: false, error: 'No file path' };
+  if(!ffprobePath) return { success: false, error: 'ffprobe unavailable' };
+
+  return new Promise((resolve) => {
+    ffmpeg.ffprobe(filePath, (err, data) => {
+      if(err) { resolve({ success: false, error: err.message }); return; }
+      try {
+        const streams = (data && data.streams) || [];
+        const format = (data && data.format) || {};
+        const v = streams.find(s => s.codec_type === 'video') || {};
+        const audios = streams.filter(s => s.codec_type === 'audio');
+        const a = audios[0] || null;
+
+        // r_frame_rate is exact ("30000/1001"); avg_frame_rate as fallback.
+        const parseRate = (r) => {
+          if(!r || typeof r !== 'string' || r.indexOf('/') < 0) return null;
+          const [n, d] = r.split('/').map(Number);
+          return (d && n) ? (n / d) : null;
+        };
+        const fpsExact = v.r_frame_rate || v.avg_frame_rate || null;
+        const fpsRaw = parseRate(v.r_frame_rate) || parseRate(v.avg_frame_rate);
+        const fps = fpsRaw ? Math.round(fpsRaw * 1000) / 1000 : null;
+
+        const meta = {
+          width:         v.width || null,
+          height:        v.height || null,
+          fps:           fps,
+          fpsExact:      fpsExact,
+          duration:      parseFloat(format.duration) || parseFloat(v.duration) || null,
+          vCodec:        v.codec_name || null,
+          aCodec:        a ? a.codec_name : null,
+          bitrate:       parseInt(format.bit_rate) || null,
+          pixFmt:        v.pix_fmt || null,
+          sampleAspect:  v.sample_aspect_ratio || null,
+          displayAspect: v.display_aspect_ratio || null,
+          sampleRate:    a ? parseInt(a.sample_rate) : null,
+          channels:      a ? a.channels : null,
+          audioStreams:  audios.length
+        };
+        resolve({ success: true, meta });
+      } catch(e) {
+        resolve({ success: false, error: e.message });
+      }
+    });
+  });
 });
 
 ipcMain.handle('extract-audio-region', async (event, options) => {
@@ -255,36 +318,153 @@ ipcMain.handle('export-with-overlay', async (event, options) => {
 // Renders each frame with captions overlay
 // ═══════════════════════════════════════════
 
+// Recursively remove a temp frame dir (best effort).
+function _cleanupDir(dir) {
+  if(!dir) return;
+  try {
+    fs.readdirSync(dir).forEach(f => {
+      try { fs.unlinkSync(path.join(dir, f)); } catch(_) {}
+    });
+    fs.rmdirSync(dir);
+  } catch(_) {}
+}
+
+// Shared encode step: composite a frame_%06d.png sequence (transparent caption
+// overlay) from `tmpDir` onto `videoPath` and mux original audio → outputPath.
+// Used by both the legacy array-based export and the streaming export.
+function _encodeCaptionVideo(event, opts) {
+  const {
+    tmpDir, videoPath, outputPath,
+    width, height, fps = 30, trimIn, trimOut,
+    quality = 'high', useGPU = true
+  } = opts;
+
+  return new Promise((resolve, reject) => {
+    event.sender.send('export-progress', {
+      percent: 15, status: 'Merging video + audio + captions...', phase: 'merge'
+    });
+    console.log('[Export] Encoding from', tmpDir, '→', outputPath, width + 'x' + height + '@' + fps);
+
+    const command = ffmpeg();
+    currentExportCommand = command;
+
+    // Input 1: Original video (with audio)
+    command.input(videoPath);
+    if(trimIn && trimIn > 0) command.inputOptions(['-ss', String(trimIn)]);
+    if(trimOut && trimOut !== null) {
+      command.inputOptions(['-t', String(trimOut - (trimIn || 0))]);
+    }
+
+    // Input 2: PNG sequence (captions overlay)
+    command.input(path.join(tmpDir, 'frame_%06d.png'));
+    command.inputOptions(['-framerate', String(fps), '-f', 'image2']);
+
+    // Filter: scale video + overlay captions
+    const filterStr =
+      '[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[bg];' +
+      '[1:v]scale=' + width + ':' + height + '[ov];' +
+      '[bg][ov]overlay=0:0:shortest=1[out]';
+    command.complexFilter(filterStr);
+
+    const outputOpts = [
+      '-map', '[out]',
+      '-map', '0:a?',
+      '-pix_fmt', 'yuv420p',
+      '-movflags', '+faststart',
+      '-r', String(fps)
+    ];
+
+    if(useGPU) {
+      const gpuPresets = {
+        high:   { preset: 'p6', cq: '19' },
+        medium: { preset: 'p4', cq: '23' },
+        low:    { preset: 'p2', cq: '28' }
+      };
+      const gp = gpuPresets[quality] || gpuPresets.high;
+      command
+        .videoCodec('h264_nvenc')
+        .audioCodec('aac')
+        .audioBitrate('192k')
+        .outputOptions(outputOpts.concat(['-preset', gp.preset, '-cq', gp.cq, '-b:v', '0', '-rc', 'vbr']));
+      console.log('[Export] Using GPU (NVENC)');
+    } else {
+      const cpuPresets = {
+        high:   { preset: 'medium', crf: '20' },
+        medium: { preset: 'fast',   crf: '23' },
+        low:    { preset: 'veryfast', crf: '28' }
+      };
+      const cp = cpuPresets[quality] || cpuPresets.medium;
+      command
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .audioBitrate('192k')
+        .outputOptions(outputOpts.concat(['-preset', cp.preset, '-crf', cp.crf, '-threads', '0']));
+      console.log('[Export] Using CPU (libx264)');
+    }
+
+    command
+      .on('start', (cmdLine) => console.log('[FFmpeg CMD]', cmdLine))
+      .on('progress', (progress) => {
+        const percent = 15 + Math.min(83, (progress.percent || 0) * 0.83);
+        const elapsed = (Date.now() - exportStartTime) / 1000;
+        let eta = null;
+        if(percent > 20) eta = Math.max(0, (elapsed / (percent / 100)) - elapsed);
+        event.sender.send('export-progress', {
+          percent: percent,
+          status: 'Rendering final video',
+          phase: 'render',
+          timemark: progress.timemark || '00:00:00',
+          fps: progress.currentFps || 0,
+          speed: progress.currentFps > 0 ? (progress.currentFps / fps).toFixed(1) + 'x' : '',
+          eta: eta
+        });
+      })
+      .on('end', () => {
+        currentExportCommand = null;
+        _cleanupDir(tmpDir);
+        let fileSize = 0;
+        try { fileSize = fs.statSync(outputPath).size; } catch(_) {}
+        const totalTime = (Date.now() - exportStartTime) / 1000;
+        console.log('[Export] SUCCESS in ' + totalTime.toFixed(1) + 's, ' + (fileSize / 1048576).toFixed(2) + 'MB');
+        event.sender.send('export-progress', {
+          percent: 100, status: 'Complete!', phase: 'complete', fileSize, totalTime
+        });
+        resolve({ success: true, outputPath, fileSize, totalTime });
+      })
+      .on('error', (err, stdout, stderr) => {
+        currentExportCommand = null;
+        _cleanupDir(tmpDir);
+        console.error('[FFmpeg ERROR]', err.message);
+        if(stderr) console.error('[FFmpeg STDERR]', stderr);
+        event.sender.send('export-progress', {
+          percent: 0, status: 'Error: ' + err.message, phase: 'error'
+        });
+        reject({ success: false, error: err.message, stderr: stderr });
+      })
+      .save(outputPath);
+  });
+}
+
+// ── Legacy array-based export (kept for backward compatibility) ──
 ipcMain.handle('export-frames-mode', async (event, options) => {
   const {
     videoPath, outputPath, frameImages,
     resolution, fps = 30, trimIn, trimOut,
     quality = 'high', useGPU = true
   } = options;
-  
+
   return new Promise(async (resolve, reject) => {
     let tmpDir = null;
-    
     try {
       exportStartTime = Date.now();
       const [width, height] = resolution.split('x').map(Number);
       tmpDir = path.join(app.getPath('temp'), 'captionframes_' + Date.now());
       fs.mkdirSync(tmpDir, { recursive: true });
-      
-      console.log('[Export] Frames dir:', tmpDir);
-      console.log('[Export] Total frames:', frameImages.length);
-      console.log('[Export] Video:', videoPath);
-      console.log('[Export] Output:', outputPath);
-      console.log('[Export] Resolution:', width + 'x' + height);
-      console.log('[Export] FPS:', fps);
-      console.log('[Export] Trim IN:', trimIn, 'OUT:', trimOut);
-      
-      // ═══ STEP 1: Save PNG frames ═══
+
+      // STEP 1: Save PNG frames from the in-memory array
       for(let i = 0; i < frameImages.length; i++) {
         const framePath = path.join(tmpDir, 'frame_' + String(i).padStart(6, '0') + '.png');
-        const base64Data = frameImages[i].replace(/^data:image\/png;base64,/, '');
-        fs.writeFileSync(framePath, base64Data, 'base64');
-        
+        fs.writeFileSync(framePath, frameImages[i].replace(/^data:image\/png;base64,/, ''), 'base64');
         if(i % 10 === 0) {
           event.sender.send('export-progress', {
             percent: (i / frameImages.length) * 15,
@@ -293,168 +473,83 @@ ipcMain.handle('export-frames-mode', async (event, options) => {
           });
         }
       }
-      
-      event.sender.send('export-progress', {
-        percent: 15, status: 'Merging video + audio + captions...', phase: 'merge'
+
+      // STEP 2: Encode
+      const result = await _encodeCaptionVideo(event, {
+        tmpDir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU
       });
-      
-      console.log('[Export] All frames saved, starting merge...');
-      
-      // ═══ STEP 2: Merge everything in ONE ffmpeg command ═══
-      const command = ffmpeg();
-      currentExportCommand = command;
-      
-      // Input 1: Original video (with audio)
-      command.input(videoPath);
-      if(trimIn && trimIn > 0) {
-        command.inputOptions(['-ss', String(trimIn)]);
-      }
-      if(trimOut && trimOut !== null) {
-        const dur = trimOut - (trimIn || 0);
-        command.inputOptions(['-t', String(dur)]);
-      }
-      
-      // Input 2: PNG sequence (captions overlay)
-      command.input(path.join(tmpDir, 'frame_%06d.png'));
-      command.inputOptions([
-        '-framerate', String(fps),
-        '-f', 'image2'
-      ]);
-      
-      // Filter: scale video + overlay captions
-      const filterStr = 
-        '[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[bg];' +
-        '[1:v]scale=' + width + ':' + height + '[ov];' +
-        '[bg][ov]overlay=0:0:shortest=1[out]';
-      
-      command.complexFilter(filterStr);
-      
-      // Output settings
-      const outputOpts = [
-        '-map', '[out]',
-        '-map', '0:a?',
-        '-pix_fmt', 'yuv420p',
-        '-movflags', '+faststart',
-        '-r', String(fps)
-      ];
-      
-      if(useGPU) {
-        const gpuPresets = {
-          high:   { preset: 'p6', cq: '19' },
-          medium: { preset: 'p4', cq: '23' },
-          low:    { preset: 'p2', cq: '28' }
-        };
-        const gp = gpuPresets[quality] || gpuPresets.high;
-        command
-          .videoCodec('h264_nvenc')
-          .audioCodec('aac')
-          .audioBitrate('192k')
-          .outputOptions(outputOpts.concat([
-            '-preset', gp.preset,
-            '-cq', gp.cq,
-            '-b:v', '0',
-            '-rc', 'vbr'
-          ]));
-        console.log('[Export] Using GPU (NVENC)');
-      } else {
-        const cpuPresets = {
-          high:   { preset: 'medium', crf: '20' },
-          medium: { preset: 'fast',   crf: '23' },
-          low:    { preset: 'veryfast', crf: '28' }
-        };
-        const cp = cpuPresets[quality] || cpuPresets.medium;
-        command
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .audioBitrate('192k')
-          .outputOptions(outputOpts.concat([
-            '-preset', cp.preset,
-            '-crf', cp.crf,
-            '-threads', '0'
-          ]));
-        console.log('[Export] Using CPU (libx264)');
-      }
-      
-      command
-        .on('start', (cmdLine) => {
-          console.log('[FFmpeg CMD]', cmdLine);
-        })
-        .on('progress', (progress) => {
-          const percent = 15 + Math.min(83, (progress.percent || 0) * 0.83);
-          const elapsed = (Date.now() - exportStartTime) / 1000;
-          let eta = null;
-          if(percent > 20) {
-            eta = Math.max(0, (elapsed / (percent / 100)) - elapsed);
-          }
-          event.sender.send('export-progress', {
-            percent: percent,
-            status: 'Rendering final video',
-            phase: 'render',
-            timemark: progress.timemark || '00:00:00',
-            fps: progress.currentFps || 0,
-            speed: progress.currentFps > 0 ? (progress.currentFps / fps).toFixed(1) + 'x' : '',
-            eta: eta
-          });
-        })
-        .on('end', () => {
-          currentExportCommand = null;
-          
-          // Cleanup temp
-          try {
-            fs.readdirSync(tmpDir).forEach(f => {
-              try { fs.unlinkSync(path.join(tmpDir, f)); } catch(_) {}
-            });
-            fs.rmdirSync(tmpDir);
-          } catch(_) {}
-          
-          let fileSize = 0;
-          try { fileSize = fs.statSync(outputPath).size; } catch(_) {}
-          const totalTime = (Date.now() - exportStartTime) / 1000;
-          
-          console.log('[Export] SUCCESS in ' + totalTime.toFixed(1) + 's');
-          console.log('[Export] File size:', (fileSize / 1024 / 1024).toFixed(2) + 'MB');
-          
-          event.sender.send('export-progress', {
-            percent: 100, status: 'Complete!', phase: 'complete', fileSize, totalTime
-          });
-          resolve({ success: true, outputPath, fileSize, totalTime });
-        })
-        .on('error', (err, stdout, stderr) => {
-          currentExportCommand = null;
-          console.error('[FFmpeg ERROR]', err.message);
-          console.error('[FFmpeg STDERR]', stderr);
-          
-          // Cleanup temp
-          try {
-            fs.readdirSync(tmpDir).forEach(f => {
-              try { fs.unlinkSync(path.join(tmpDir, f)); } catch(_) {}
-            });
-            fs.rmdirSync(tmpDir);
-          } catch(_) {}
-          
-          event.sender.send('export-progress', {
-            percent: 0,
-            status: 'Error: ' + err.message,
-            phase: 'error'
-          });
-          reject({ success: false, error: err.message, stderr: stderr });
-        })
-        .save(outputPath);
-        
+      resolve(result);
     } catch(err) {
       currentExportCommand = null;
-      if(tmpDir) {
-        try {
-          fs.readdirSync(tmpDir).forEach(f => {
-            try { fs.unlinkSync(path.join(tmpDir, f)); } catch(_) {}
-          });
-          fs.rmdirSync(tmpDir);
-        } catch(_) {}
-      }
+      _cleanupDir(tmpDir);
       console.error('[Export Setup Error]', err);
       reject({ success: false, error: err.message });
     }
   });
+});
+
+// ═══════════════════════════════════════════
+// STREAMING EXPORT (memory-safe)
+// Renderer streams frames one at a time to disk
+// instead of holding the whole sequence in RAM.
+// ═══════════════════════════════════════════
+const exportSessions = {};   // id → { dir }
+let _exportIdCounter = 0;
+
+ipcMain.handle('export-init', async () => {
+  try {
+    const id = 'exp_' + Date.now() + '_' + (++_exportIdCounter);
+    const dir = path.join(app.getPath('temp'), 'captionframes_' + id);
+    fs.mkdirSync(dir, { recursive: true });
+    exportSessions[id] = { dir };
+    exportStartTime = Date.now();
+    console.log('[Export] Streaming session', id, '→', dir);
+    return { success: true, id, dir };
+  } catch(err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('export-add-frame', async (event, { id, index, dataUrl }) => {
+  try {
+    const sess = exportSessions[id];
+    if(!sess) return { success: false, error: 'Unknown export session: ' + id };
+    const framePath = path.join(sess.dir, 'frame_' + String(index).padStart(6, '0') + '.png');
+    fs.writeFileSync(framePath, dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
+    return { success: true };
+  } catch(err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('export-encode', async (event, options) => {
+  const {
+    id, videoPath, outputPath,
+    resolution, fps = 30, trimIn, trimOut,
+    quality = 'high', useGPU = true
+  } = options;
+
+  const sess = exportSessions[id];
+  if(!sess) return { success: false, error: 'Unknown export session: ' + id };
+
+  const [width, height] = resolution.split('x').map(Number);
+  try {
+    const result = await _encodeCaptionVideo(event, {
+      tmpDir: sess.dir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU
+    });
+    delete exportSessions[id];   // dir already cleaned by _encodeCaptionVideo
+    return result;
+  } catch(err) {
+    delete exportSessions[id];
+    return { success: false, error: err.error || err.message, stderr: err.stderr };
+  }
+});
+
+// Abort a streaming session that never reached encode (e.g. user cancelled during render).
+ipcMain.handle('export-abort', async (event, { id }) => {
+  const sess = exportSessions[id];
+  if(sess) { _cleanupDir(sess.dir); delete exportSessions[id]; }
+  return { success: true };
 });
 ipcMain.handle('save-file-dialog', async (event, options) => {
   return await dialog.showSaveDialog(mainWindow, {

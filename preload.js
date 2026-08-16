@@ -19,10 +19,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   extractAudioRegion: (options) => ipcRenderer.invoke('extract-audio-region', options),
+
+  // Read ground-truth source video metadata (resolution/fps/codec/bitrate/audio)
+  probeVideo: (filePath) => ipcRenderer.invoke('probe-video', filePath),
   
   // NEW: Frame-based export (CapCut style)
   exportFramesMode: (options) => ipcRenderer.invoke('export-frames-mode', options),
   exportWithOverlay: (options) => ipcRenderer.invoke('export-with-overlay', options),
+
+  // Streaming export (memory-safe): init → add frames one by one → encode
+  exportInit: () => ipcRenderer.invoke('export-init'),
+  exportAddFrame: (options) => ipcRenderer.invoke('export-add-frame', options),
+  exportEncode: (options) => ipcRenderer.invoke('export-encode', options),
+  exportAbort: (options) => ipcRenderer.invoke('export-abort', options),
   
   cancelExport: () => ipcRenderer.invoke('cancel-export'),
   

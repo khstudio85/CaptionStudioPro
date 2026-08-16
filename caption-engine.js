@@ -379,25 +379,30 @@
       const padV = props.padV || 5;
       const radius = props.barRadius || 7;
       const bgOp = (props.bgOpacity || 88) / 100;
-      
+      // DOM keeps the active word scaled at hlScale (not 1.0) for the whole
+      // active duration, with the bar popping to bounceScale. Match that: the
+      // active word settles to hlScale and peaks at bounceScale.
+      const hlScale = spec.highlightScale || 1;
+      const peakScale = Math.max(bounceScale, hlScale);
+
       return {
         words: group.words.map((_, i) => {
           const isActive = i === activeIdx && spec.highlightEnabled;
           let scale = 1;
           let barVisible = false;
-          
+
           if(isActive) {
             const wt = group.wordTimes[i];
             const wordDur = wt.end - wt.start;
             const localTime = currentTime - wt.start;
             const peakTime = wordDur * 0.35;
-            
+
             if(localTime < peakTime) {
               const t = localTime / peakTime;
-              scale = 1 + (bounceScale - 1) * this.easeOutBack(t);
+              scale = hlScale + (peakScale - hlScale) * this.easeOutBack(t);
             } else {
               const t = (localTime - peakTime) / (wordDur - peakTime);
-              scale = bounceScale - (bounceScale - 1) * this.easeInOut(t);
+              scale = peakScale - (peakScale - hlScale) * this.easeInOut(t);
             }
             barVisible = true;
           }
@@ -801,15 +806,255 @@
   }
   
   // ═══════════════════════════════════════════
+  // 6. CAPTION RENDERER (Canvas 2D)
+  // The ONE draw routine — consumed by both the
+  // preview and the export so pixels match.
+  // Deterministic: renderFrame(ctx, spec, group, t, W, H)
+  // draws the caption for time t at any resolution.
+  // ═══════════════════════════════════════════
+
+  class CaptionRenderer {
+    constructor() {
+      this.anim   = new AnimationEngine();
+      this.layout = new TextLayoutEngine();
+      // Reusable offscreen canvas for per-word glyph compositing (shadows/glow).
+      this._wc = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+      this._wctx = this._wc ? this._wc.getContext('2d') : null;
+    }
+
+    // ── Font readiness (spec §6: fail loudly, never silently fall back) ──
+    // Returns { ok, family }. Callers should surface !ok before exporting.
+    async ensureFont(spec) {
+      const family = (spec.fontFamily || '').replace(/['"]/g, '').split(',')[0].trim();
+      if(typeof document === 'undefined' || !document.fonts) return { ok: true, family };
+      const decl = (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
+                   ' ' + Math.max(8, spec.fontSize || 32) + 'px "' + family + '"';
+      try {
+        if(!document.fonts.check(decl)) await document.fonts.load(decl);
+      } catch(_) { /* fall through to the check below */ }
+      const ok = document.fonts.check(decl);
+      return { ok, family };
+    }
+
+    fontString(spec, sizePx) {
+      return (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
+             ' ' + sizePx + 'px ' + spec.fontFamily;
+    }
+
+    // hex (#rgb/#rrggbb) + alpha → rgba() string
+    _rgba(hex, alpha) {
+      if(typeof hex !== 'string') return hex;
+      let c = hex.replace('#', '');
+      if(c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+      const r = parseInt(c.substring(0,2),16) || 0;
+      const g = parseInt(c.substring(2,4),16) || 0;
+      const b = parseInt(c.substring(4,6),16) || 0;
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + (alpha == null ? 1 : alpha) + ')';
+    }
+
+    // Linear gradient across a text box, matching the CSS gradientAngle used in
+    // the preview (0deg = to top, clockwise). Mirrors makeTextGradient in index.html.
+    _makeGradient(ctx, spec, x0, y0, x1, y1) {
+      const angle = (Number(spec.gradientAngle) || 135) * Math.PI / 180;
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const w = x1 - x0, h = y1 - y0;
+      const len = Math.sqrt(w*w + h*h) / 2 || 1;
+      const dx = Math.sin(angle), dy = -Math.cos(angle);
+      const g = ctx.createLinearGradient(cx - dx*len, cy - dy*len, cx + dx*len, cy + dy*len);
+      g.addColorStop(0, spec.gradientColor1 || '#FF512F');
+      g.addColorStop(1, spec.gradientColor2 || '#F09819');
+      return g;
+    }
+
+    _roundRectPath(ctx, x, y, w, h, r) {
+      r = Math.max(0, Math.min(r, w/2, h/2));
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.arcTo(x+w, y,   x+w, y+h, r);
+      ctx.arcTo(x+w, y+h, x,   y+h, r);
+      ctx.arcTo(x,   y+h, x,   y,   r);
+      ctx.arcTo(x,   y,   x+w, y,   r);
+      ctx.closePath();
+    }
+
+    // Render a single styled word (stroke + fill/gradient) into the reusable
+    // offscreen canvas, centered. Returns { canvas, w, h }.
+    _renderWordGlyph(text, spec, fillStyle, fontPx, scale) {
+      const ctx = this._wctx;
+      ctx.font = this.fontString(spec, fontPx);
+      const metrics = ctx.measureText(text);
+      const strokeW = (spec.strokeEnabled && spec.strokeWidth > 0)
+        ? Math.max(1, spec.strokeWidth * scale) : 0;
+      const pad = Math.ceil(strokeW + fontPx * 0.35 + 4);
+      const w = Math.ceil(metrics.width) + pad * 2;
+      const h = Math.ceil(fontPx * 1.6) + pad * 2;
+      this._wc.width = w;
+      this._wc.height = h;
+
+      // measure/font reset after resize (resizing clears context state)
+      ctx.font = this.fontString(spec, fontPx);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if('letterSpacing' in ctx) ctx.letterSpacing = (spec.letterSpacing ? spec.letterSpacing * scale : 0) + 'px';
+      ctx.lineJoin = 'round';
+
+      const cx = w/2, cy = h/2;
+
+      // Fill: gradient (spans this word's box) takes precedence — matches the
+      // DOM's -webkit-text-fill-color behavior where gradient overrides color.
+      let fill = fillStyle;
+      if(spec.gradientEnabled) {
+        fill = this._makeGradient(ctx, spec, pad, pad, w - pad, h - pad);
+      }
+
+      // Stroke first, then fill on top (paint-order: stroke fill).
+      if(strokeW > 0) {
+        ctx.strokeStyle = spec.strokeColor || '#000';
+        ctx.lineWidth = strokeW * 2; // canvas stroke is centered; *2 ≈ CSS text-stroke width outside
+        ctx.strokeText(text, cx, cy);
+      }
+      ctx.fillStyle = fill;
+      ctx.fillText(text, cx, cy);
+
+      return { canvas: this._wc, w, h };
+    }
+
+    // Cast a blurred shadow of `srcCanvas` onto ctx at (dx,dy) using the
+    // off-canvas shift trick so only the shadow (not the source) is visible.
+    _castShadow(ctx, srcCanvas, dx, dy, offX, offY, blur, color) {
+      const SHIFT = 20000;
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = blur;
+      ctx.shadowOffsetX = offX + SHIFT;
+      ctx.shadowOffsetY = offY;
+      ctx.drawImage(srcCanvas, dx - SHIFT, dy);
+      ctx.restore();
+    }
+
+    // Draw one caption group at time t. Caller sets up ctx; does NOT clear.
+    renderFrame(ctx, spec, group, t, W, H) {
+      if(!group || !group.words || !group.words.length) return;
+
+      const layout = this.layout.layoutGroup(group, spec, W, H);
+      const state  = this.anim.calculate(spec, group, t);
+      const fontPx = layout.fontSize;
+      const scale  = H / (spec.canvasHeight || H);
+      const containerOpacity = (state.containerOpacity == null ? 1 : state.containerOpacity);
+      if(containerOpacity <= 0) return;
+
+      ctx.save();
+      ctx.globalAlpha = 1;
+
+      // ── Container background box (spec §caption background) ──
+      if(state.containerBg || (spec.bgEnabled && spec.bgOpacity > 0)) {
+        const bg = state.containerBg || {
+          color: spec.bgColor, opacity: spec.bgOpacity / 100,
+          padH: spec.bgPadH, padV: spec.bgPadV, radius: spec.bgRadius
+        };
+        const padH = (bg.padH || 0) * scale, padV = (bg.padV || 0) * scale;
+        const x0 = layout.centerX - layout.totalWidth/2 - padH;
+        const y0 = layout.centerY - layout.totalHeight/2 - padV;
+        ctx.save();
+        ctx.globalAlpha = containerOpacity * (bg.opacity == null ? 1 : bg.opacity);
+        ctx.fillStyle = bg.color || '#000';
+        this._roundRectPath(ctx, x0, y0, layout.totalWidth + padH*2, layout.totalHeight + padV*2, (bg.radius||0)*scale);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // ── Per-word draw ──
+      const words = state.words || [];
+      layout.words.forEach((pw, i) => {
+        const ws = words[i] || {};
+        if(ws.visible === false) return;
+        const wordOpacity = (ws.opacity == null ? 1 : ws.opacity);
+        if(wordOpacity <= 0) return;
+        const wScale = (ws.scale == null ? 1 : ws.scale);
+
+        ctx.save();
+        ctx.globalAlpha = containerOpacity * wordOpacity;
+        ctx.translate(pw.x + (ws.x||0)*scale, pw.y + (ws.y||0)*scale);
+        if(wScale !== 1) ctx.scale(wScale, wScale);
+
+        // Border/Pop-up bar behind the word (Style 7 — s7-word-bar). Uses the
+        // bar's own padding/radius/color from the animation state.
+        if(ws.wordBar) {
+          const padH = (ws.wordBar.padH || 0) * scale;
+          const padV = (ws.wordBar.padV || 0) * scale;
+          const bw = pw.width + padH*2;
+          const bh = fontPx + padV*2;
+          ctx.fillStyle = ws.wordBar.color;
+          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
+          ctx.fill();
+        }
+
+        // Highlight pill behind the word (styles 1/2 highlight)
+        if(ws.bgColor) {
+          const padH = (spec.highlightPadH || 0) * scale;
+          const padV = (spec.highlightPadV || 0) * scale;
+          const bw = pw.width + padH*2;
+          const bh = fontPx + padV*2;
+          ctx.fillStyle = ws.bgColor;
+          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (spec.highlightRadius||0)*scale);
+          ctx.fill();
+        }
+
+        // Word glyph (into offscreen), then shadows/glow, then crisp composite
+        const fillColor = ws.color || spec.color || '#fff';
+        const glyph = this._renderWordGlyph(pw.text, spec, fillColor, fontPx, scale);
+        const gx = -glyph.w/2, gy = -glyph.h/2;
+
+        // Multi-layer drop shadows (spec.shadows: [{dist,angle,size,opacity,color}])
+        const shadows = Array.isArray(spec.shadows) ? spec.shadows : [];
+        shadows.forEach(sh => {
+          if(!sh) return;
+          const ang = (sh.angle || 0) * Math.PI / 180;
+          const dist = (sh.dist || 0) * scale;
+          this._castShadow(ctx, glyph.canvas, gx, gy,
+            Math.cos(ang) * dist, Math.sin(ang) * dist,
+            (sh.size || 0) * scale, this._rgba(sh.color || '#000', sh.opacity == null ? 1 : sh.opacity));
+        });
+
+        // Glow (spec §glow) or per-word glow from the animation state
+        const glow = ws.glow || (spec.glowEnabled ? { color: spec.glowColor, size: spec.glowIntensity } : null);
+        if(glow && glow.size > 0) {
+          this._castShadow(ctx, glyph.canvas, gx, gy, 0, 0, glow.size * scale, glow.color || '#fff');
+          this._castShadow(ctx, glyph.canvas, gx, gy, 0, 0, glow.size * scale, glow.color || '#fff'); // 2× for intensity
+        }
+
+        // Crisp word on top
+        ctx.drawImage(glyph.canvas, gx, gy);
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    // Convenience: pick the active group at time t and draw it. Clears the target.
+    renderComposite(ctx, spec, groups, t, W, H, clear) {
+      if(clear !== false) ctx.clearRect(0, 0, W, H);
+      if(!groups || !groups.length) return;
+      let active = null;
+      for(let i = 0; i < groups.length; i++) {
+        const g = groups[i];
+        if(t >= g.start && t < g.end) { active = g; break; }
+      }
+      if(active) this.renderFrame(ctx, spec, active, t, W, H);
+    }
+  }
+
+  // ═══════════════════════════════════════════
   // EXPORT PUBLIC API
   // ═══════════════════════════════════════════
-  
+
   const CaptionEngine = {
     CaptionStyleSpec,
     AnimationEngine,
     TextLayoutEngine,
     VideoMetadata,
     StyleCollector,
+    CaptionRenderer,
     version: '1.0.0'
   };
   
@@ -822,7 +1067,8 @@
   global.TextLayoutEngine = TextLayoutEngine;
   global.VideoMetadata = VideoMetadata;
   global.StyleCollector = StyleCollector;
-  
+  global.CaptionRenderer = CaptionRenderer;
+
   console.log('[CaptionEngine] v1.0.0 loaded ✓');
   
 })(typeof window !== 'undefined' ? window : this);
