@@ -1045,7 +1045,11 @@ body {
   transition: background 0.15s, transform 0.12s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s;
   box-shadow: 0 0 16px rgba(108,71,255,0.5), 0 2px 8px rgba(0,0,0,0.4);
   position: relative;
+  /* Kill the glyph text-selection flecks + focus ring / tap highlight */
+  user-select: none; -webkit-user-select: none;
+  outline: none; -webkit-tap-highlight-color: transparent;
 }
+.play-btn:focus, .play-btn:focus-visible { outline: none; }
 .play-btn::after {
   content: '';
   position: absolute;
@@ -1203,7 +1207,7 @@ body {
 /* Cursor: DEFAULT on hover, GRAB only when actually dragging */
 /* Cursor: DEFAULT arrow on empty timeline (crosshair only during marquee drag) */
 body.select-tool-active #timelineScroll { cursor: default !important; }
-body.select-tool-active #timelineScroll .tl-audio-clip { cursor: pointer !important; pointer-events: all !important; }
+body.select-tool-active #timelineScroll .tl-audio-clip { cursor: grab !important; pointer-events: all !important; }
 body.select-tool-active #timelineScroll .tl-group-block { cursor: pointer !important; }
 body.select-tool-active #timelineScroll .tl-audio-clip:active { cursor: grabbing !important; }
 body.select-tool-active #timelineScroll .tl-group-block:active { cursor: grabbing !important; }
@@ -1269,7 +1273,7 @@ body.razor-tool-active #timelineScroll .tl-audio-clip { cursor: crosshair !impor
     transparent 4px, transparent 8px
   );
   border: 1px dashed rgba(255,107,107,0.30);
-  border-radius: 3px; pointer-events: all; z-index: 3;
+  border-radius: 3px; pointer-events: all; z-index: 30;
   cursor: pointer; transition: background 0.12s, border-color 0.12s;
 }
 .tl-gap-indicator:hover {
@@ -5367,6 +5371,38 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
   border: 1px dashed var(--border2, #3a3a4a); font-size: 15px; font-weight: 700;
 }
 .seq-tab-add:hover { color: var(--accent2, #9d7eff); border-color: var(--accent2, #9d7eff); }
+
+/* ── Smart Cut panel ── */
+.sc-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 0; border-bottom:1px solid rgba(255,255,255,0.05); }
+.sc-toggle { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; color:var(--text,#fff); cursor:pointer; }
+.sc-toggle input[type=checkbox] { width:15px; height:15px; accent-color:var(--accent2,#9d7eff); cursor:pointer; }
+.sc-thr input { width:56px; background:var(--bg3,#1c1c26); border:1px solid var(--border,#2a2a3a); color:var(--text,#fff); border-radius:5px; padding:3px 6px; font-size:12px; text-align:right; }
+.sc-thr { font-size:11px; color:var(--text3,#888); }
+.sc-select { background:var(--bg3,#1c1c26); border:1px solid var(--border,#2a2a3a); color:var(--text,#fff); border-radius:5px; padding:4px 6px; font-size:12px; cursor:pointer; }
+.sc-mini { background:var(--bg3,#1c1c26); border:1px solid var(--border2,#3a3a4a); color:var(--accent2,#9d7eff); border-radius:5px; padding:3px 8px; font-size:11px; cursor:pointer; }
+.sc-btn { flex:1; padding:10px; border-radius:8px; border:1px solid var(--border,#2a2a3a); background:var(--bg3,#1c1c26); color:var(--text,#fff); font-size:12px; font-weight:700; cursor:pointer; }
+.sc-btn-primary { background:linear-gradient(135deg,var(--accent,#6c47ff),#9d7eff); border:none; }
+.sc-btn:disabled { opacity:0.5; cursor:not-allowed; }
+.sc-det { display:flex; align-items:center; gap:8px; padding:7px 8px; margin-bottom:5px; border-radius:6px; background:var(--bg3,#1c1c26); border:1px solid var(--border,#2a2a3a); font-size:11px; cursor:pointer; }
+.sc-det:hover { border-color:var(--accent2,#9d7eff); }
+.sc-det.keep { opacity:0.45; }
+.sc-det-type { font-weight:800; padding:2px 6px; border-radius:4px; font-size:9px; text-transform:uppercase; letter-spacing:0.4px; }
+.sc-det-info { flex:1; color:var(--text2,#aaa); }
+.sc-det-toggle { font-size:10px; font-weight:700; padding:2px 7px; border-radius:4px; border:1px solid var(--border2,#3a3a4a); color:var(--text2,#aaa); }
+.sc-summary-box { background:var(--bg3,#1c1c26); border:1px solid var(--border,#2a2a3a); border-radius:8px; padding:12px; }
+.sc-summary-big { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px; }
+.sc-summary-row { display:flex; justify-content:space-between; font-size:11px; color:var(--text3,#888); padding:2px 0; }
+
+/* ── AI detection track on the timeline ── */
+#tlAiTrack { position:absolute; left:0; bottom:0; height:12px; pointer-events:none; z-index:6; }
+#tlAiTrack.active { pointer-events:none; }
+.tl-ai-marker {
+  position:absolute; bottom:0; height:12px; border-radius:2px; cursor:pointer;
+  pointer-events:all; opacity:0.9; transition:opacity .1s, height .1s;
+  box-shadow:0 0 0 1px rgba(0,0,0,0.3);
+}
+.tl-ai-marker:hover { opacity:1; height:16px; }
+.tl-ai-marker.keep { opacity:0.3; }
 </style>
 </head>
 <body>
@@ -5660,6 +5696,10 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
           🗑 Del Clip <span class="mk">Del</span>
         </button>
         <div class="tl-mini-sep"></div>
+        <button class="tl-mini-btn" id="miniJoinClips" onclick="closeAllGaps()" title="Close all gaps — join split clip parts back together">
+          🔗 Join Clips
+        </button>
+        <div class="tl-mini-sep"></div>
         <button class="tl-mini-btn" id="miniNewSeq" onclick="createSequence()" title="Create a new sequence (separate timeline, captions & canvas)">
           🆕 New Sequence
         </button>
@@ -5702,6 +5742,8 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
             <!-- TRACK 2: Caption Layer Track -->
             <div class="tl-caption-track" id="tlCaptionTrack">
               <div id="tlWords"></div>
+              <!-- ── AI DETECTION TRACK (Smart Cut markers) ── -->
+              <div id="tlAiTrack"></div>
               <!-- ── SNAP GUIDES (start / end / playhead) ── -->
               <div class="tl-snap-guide snap-start"    id="tlSnapGuideStart"></div>
               <div class="tl-snap-guide snap-end"      id="tlSnapGuideEnd"></div>
@@ -5930,6 +5972,7 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
       <div class="cc-tab active" id="cctab-captions"  onclick="ccSwitch('captions',this)">Captions</div>
       <div class="cc-tab" id="cctab-text"              onclick="ccSwitch('text',this)">Text</div>
       <div class="cc-tab" id="cctab-animation"         onclick="ccSwitch('animation',this)">Animation</div>
+      <div class="cc-tab" id="cctab-smartcut"          onclick="ccSwitch('smartcut',this);renderSmartCut()">✂ Smart Cut</div>
     </div>
 
     <!-- ══ TAB: CAPTIONS ══ -->
@@ -6354,6 +6397,12 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
               </optgroup>
               <optgroup label="── PC Fonts ──" id="pcFontGroup" style="display:none;"></optgroup>
             </select>
+            <button type="button" id="loadPcFontsBtn" onclick="loadSystemFonts()"
+              style="margin-top:6px;width:100%;cursor:pointer;font-size:11px;font-weight:600;
+                     padding:6px 8px;border-radius:6px;border:1px dashed var(--border2,#3a3a4a);
+                     background:var(--bg3,#1c1c26);color:var(--accent2,#9d7eff);">
+              ＋ Load all fonts installed on this PC
+            </button>
           </div>
           <div class="tp-field-group">
             <span class="tp-field-label">Weight</span>
@@ -7073,6 +7122,68 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
       </div>
     </div>
 
+    <!-- ══ TAB: SMART CUT (AI dead-space removal) ══ -->
+    <div class="cc-pane" id="ccpane-smartcut">
+      <div style="padding:12px 14px;font-size:11px;color:var(--text3);line-height:1.5;">
+        Analyzes your transcript's word timings to find pauses & filler words, then removes them and joins the footage. Non-destructive until you hit Apply.
+      </div>
+
+      <!-- Settings -->
+      <div class="qp-section" style="padding:0 14px;">
+        <div class="sc-row">
+          <label class="sc-toggle"><input type="checkbox" id="scRemoveLong" checked onchange="recomputeSmartCut()"> Remove long pauses</label>
+          <span class="sc-thr"><input type="number" id="scLongThr" value="0.80" min="0.2" max="5" step="0.05" onchange="recomputeSmartCut()"> s</span>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle"><input type="checkbox" id="scReduceShort" checked onchange="recomputeSmartCut()"> Reduce short pauses over</label>
+          <span class="sc-thr"><input type="number" id="scShortThr" value="0.40" min="0.1" max="2" step="0.05" onchange="recomputeSmartCut()"> s</span>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle" style="color:var(--text3);">Preserve minimum pause</label>
+          <span class="sc-thr"><input type="number" id="scPreserve" value="0.10" min="0" max="1" step="0.05" onchange="recomputeSmartCut()"> s</span>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle"><input type="checkbox" id="scRemoveBreath" checked onchange="recomputeSmartCut()"> Remove breaths (audio-based)</label>
+          <select id="scBreathSens" onchange="recomputeSmartCut()" class="sc-select">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle"><input type="checkbox" id="scRemoveFiller" checked onchange="recomputeSmartCut()"> Remove filler words</label>
+          <button class="sc-mini" onclick="editFillerWords()">Edit list</button>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle"><input type="checkbox" id="scRemoveEdges" checked onchange="recomputeSmartCut()"> Trim silence at start/end</label>
+        </div>
+        <div class="sc-row">
+          <label class="sc-toggle" style="color:var(--text3);">Aggressiveness</label>
+          <select id="scMode" onchange="recomputeSmartCut()" class="sc-select">
+            <option value="conservative">Conservative</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Savings summary -->
+      <div id="scSummary" style="padding:12px 14px;"></div>
+
+      <!-- Buttons -->
+      <div style="display:flex;gap:8px;padding:0 14px 8px;">
+        <button class="sc-btn sc-btn-primary" id="scApplyBtn" onclick="applySmartCut()">✂ Apply Smart Cut</button>
+        <button class="sc-btn" id="scUndoBtn" onclick="undoSmartCut()" style="display:none;">↩ Undo</button>
+      </div>
+      <div style="padding:0 14px 12px;">
+        <button class="sc-btn" style="width:100%;" onclick="exportPremiereXML()" title="Export the current timeline as FCPXML — import into Premiere Pro to fine-tune, trim & extend clips">🎬 Export to Premiere (XML)</button>
+      </div>
+
+      <!-- Detection list -->
+      <div style="padding:0 14px 4px;font-size:11px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;">Detected</div>
+      <div id="scList" style="padding:0 14px 16px;max-height:40vh;overflow:auto;"></div>
+    </div>
+
   </div><!-- end right-panel -->
 </div>
 
@@ -7595,7 +7706,7 @@ function updateFSProgress() {
   const virtualT = (typeof audioClips !== 'undefined' && audioClips && audioClips.length > 1)
     ? (window._virtualT || 0)
     : Math.max(0, audio.currentTime - (window._mediaEffectiveStart || 0));
-  const dur = (typeof getTLDur === 'function' ? getTLDur() : audio.duration) || 1;
+  const dur = (typeof getContentDur === 'function' ? getContentDur() : audio.duration) || 1;
   const pct = Math.max(0, Math.min(100, (virtualT / dur) * 100));
 
   fill.style.width = pct + '%';
@@ -7611,7 +7722,7 @@ function updateFSTimeLabels() {
   const virtualT = (typeof audioClips !== 'undefined' && audioClips && audioClips.length > 1)
     ? (window._virtualT || 0)
     : Math.max(0, audio.currentTime - (window._mediaEffectiveStart || 0));
-  const totalDur = typeof getTLDur === 'function' ? getTLDur() : (audio.duration || 0);
+  const totalDur = typeof getContentDur === 'function' ? getContentDur() : (audio.duration || 0);
   if(timeLbl && typeof fmt === 'function') timeLbl.textContent = fmt(virtualT);
   if(durLbl && typeof fmt === 'function')  durLbl.textContent  = fmt(totalDur);
 }
@@ -7631,7 +7742,7 @@ function seekFromBarFS(e) {
   if(!bar) return;
   const rect = bar.getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  const dur = (typeof getTLDur === 'function' ? getTLDur() : audio.duration) || 1;
+  const dur = (typeof getContentDur === 'function' ? getContentDur() : audio.duration) || 1;
   const targetT = pct * dur;
 
   if(typeof audioClips !== 'undefined' && audioClips && audioClips.length > 1) {
@@ -7654,7 +7765,7 @@ function hoverFSBar(e) {
   if(!bar || !hint || typeof audio === 'undefined' || !audio) return;
   const rect = bar.getBoundingClientRect();
   const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  const dur  = (typeof getTLDur === 'function' ? getTLDur() : audio.duration) || 1;
+  const dur  = (typeof getContentDur === 'function' ? getContentDur() : audio.duration) || 1;
   const t    = pct * dur;
 
   if(typeof fmt === 'function') hint.textContent = fmt(t);
@@ -8166,7 +8277,13 @@ function _forcePlayheadUpdate() {
 
   // Update height
   const timelineInner = document.getElementById('timelineInner');
-  if(timelineInner) ph.style.height = timelineInner.offsetHeight + 'px';
+  // Reading offsetHeight every frame forces a layout flush → playback jank on
+  // long timelines. Only measure when paused or not yet cached; the height
+  // doesn't change during playback.
+  if(timelineInner && ((!audio || audio.paused) || !ph._lastH)) {
+    const _h = timelineInner.offsetHeight;
+    if(_h) { ph.style.height = _h + 'px'; ph._lastH = _h; }
+  }
 
   // Auto-scroll
   const scroll = document.getElementById('timelineScroll');
@@ -8317,9 +8434,9 @@ function onTimeUpdate() {
     }
   }
 
-  // ── UI: progress bar + time label ──
-  const dur = getTLDur() || 1;
-  const pct = (tDisplay / dur * 100);
+  // ── UI: preview progress bar + time label (use real content duration) ──
+  const dur = getContentDur() || 1;
+  const pct = Math.max(0, Math.min(100, tDisplay / dur * 100));
   const progressFill = document.getElementById('progressFill');
   const playheadEl   = document.getElementById('playhead');
   if(progressFill) progressFill.style.width = pct + '%';
@@ -8556,8 +8673,28 @@ function getTLDur() {
   // Add 50% headroom AFTER last clip so timeline extends beyond content
   // This makes clips visually occupy ~66% of timeline, with 33%+ empty on right
   const totalDur = clipEnd > 0 ? clipEnd * 1.5 : 60;
-  
+
   return totalDur;
+}
+
+// Actual playable content duration (NO timeline headroom). Used by the PREVIEW
+// timecode + progress bar so the total reflects real content (e.g. 0:42) instead
+// of the padded timeline width (0:42 × 1.5 = 1:03), and the handle reaches 100%
+// exactly when playback ends. The timeline itself still uses getTLDur() for its
+// scrollable width.
+function getContentDur() {
+  if(audioClips && audioClips.length > 1) {
+    return Math.max(0.1, Math.max(...audioClips.map(c => c.timelineEnd)));
+  }
+  if(audio && audio.duration && !isNaN(audio.duration)) {
+    const effStart = window._mediaEffectiveStart || 0;
+    const effEnd   = (window._mediaEffectiveEnd != null) ? window._mediaEffectiveEnd : audio.duration;
+    return Math.max(0.1, effEnd - effStart);
+  }
+  if(audioClips && audioClips.length === 1) {
+    return Math.max(0.1, audioClips[0].timelineEnd - (audioClips[0].timelineStart || 0));
+  }
+  return 0;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -8938,7 +9075,13 @@ function updateTLPlayhead(t, _durIgnored) {
 
   // Update height to cover all tracks
   const timelineInner = document.getElementById('timelineInner');
-  if(timelineInner) ph.style.height = timelineInner.offsetHeight + 'px';
+  // Reading offsetHeight every frame forces a layout flush → playback jank on
+  // long timelines. Only measure when paused or not yet cached; the height
+  // doesn't change during playback.
+  if(timelineInner && ((!audio || audio.paused) || !ph._lastH)) {
+    const _h = timelineInner.offsetHeight;
+    if(_h) { ph.style.height = _h + 'px'; ph._lastH = _h; }
+  }
 
   // Update time label
   const tlTime = document.getElementById('tlPlayheadTime');
@@ -9590,7 +9733,7 @@ function updateTimeLabel() {
   const virtualT   = audioClips.length > 1
     ? (window._virtualT || 0)
     : Math.max(0, audio.currentTime - (window._mediaEffectiveStart || 0));
-  const totalDur   = getTLDur();
+  const totalDur   = getContentDur();   // real content length, not padded timeline width
   document.getElementById('timeLabel').textContent = fmt(virtualT) + ' / ' + fmt(totalDur);
 }
 
@@ -9971,7 +10114,10 @@ function renderGroup(idx) {
 
   const style   = getLayerAnimStyle(idx);
   const glowCSS   = s.textGlowCSS || '';
-  const _shadowLayers = [s.shadowCSS, glowCSS].filter(Boolean).join(', ');
+  // Scale the drop shadow with the caption so it stays proportional in the
+  // preview AND when enlarged in fullscreen (was fixed px → vanished when big).
+  const _scaledShadowCSS = buildShadowCSS(_fontScale);
+  const _shadowLayers = [_scaledShadowCSS, glowCSS].filter(Boolean).join(', ');
   // ✅ FIX: When gradient text fill is on, the visible color comes from
   // background-clip:text (the glyph's own fill is transparent). text-shadow
   // paints in that same transparent-fill layer, so it ends up rendering ON TOP
@@ -11168,10 +11314,12 @@ function buildTimeline() {
     buildWaveform();
   });
 
-  if(wordGroups.length === 0) return; // no captions yet — ruler+waveform still drawn above
-
+  // Always clear the caption track first so an empty sequence shows NO stale
+  // caption blocks (fixes captions from another sequence bleeding through).
   const wordsDiv = document.getElementById('tlWords');
-  wordsDiv.innerHTML = '';
+  if(wordsDiv) wordsDiv.innerHTML = '';
+
+  if(wordGroups.length === 0) return; // no captions yet — ruler+waveform still drawn above
   // Make tlWords exactly as wide as coordinate space (totalW) so px-based positioning is correct
   wordsDiv.style.position = 'absolute';
   wordsDiv.style.top      = '0';
@@ -11438,7 +11586,7 @@ function addTrimDrag(handle, gi, side, dur) {
 // ── STEP 2: SNAP ENGINE ──
 // ══════════════════════════════════════════════════════════
 
-const SNAP_THRESHOLD_PX = 8; // pixels within which snap fires
+const SNAP_THRESHOLD_PX = 16; // pixels within which snap fires (magnetic join feel)
 
 /**
  * Build snap points from all layers + playhead.
@@ -12092,7 +12240,21 @@ function zoomToSlider(z) {
 function applyZoom(newZoom) {
   const scroll = document.getElementById('timelineScroll');
   const dur    = getTLDur();
-  const t      = audio?.currentTime || 0;
+  const t      = audio ? audio.currentTime : 0;
+
+  // Playhead time in timeline space (virtual for multi-clip)
+  const vt = (audioClips.length > 1)
+    ? (window._virtualT || 0)
+    : Math.max(0, t - (window._mediaEffectiveStart || 0));
+
+  // Where the playhead currently sits ON SCREEN (px within the viewport), so we
+  // can keep it pinned there after the zoom → the timeline expands/contracts
+  // AROUND the playhead instead of the playhead sliding away.
+  const totalWOld = getTLTotalW();
+  const pxOld     = dur > 0 ? (vt / dur) * totalWOld : 0;
+  const viewW     = scroll.clientWidth - 68;
+  let   screenX   = pxOld - scroll.scrollLeft;      // playhead offset inside viewport
+  const wasVisible = screenX >= 0 && screenX <= viewW;
 
   tlZoom = Math.max(0.2, Math.min(50, newZoom));
 
@@ -12103,21 +12265,18 @@ function applyZoom(newZoom) {
 
   buildTimeline();
 
-  // Re-center scroll on playhead
-  requestAnimationFrame(() => {
-    const totalW = getTLTotalW();
-    const px     = dur > 0 ? (t / dur) * totalW : 0;
-    scroll.scrollLeft = Math.max(0, px - (scroll.clientWidth - 68) / 2);
-    updateTLPlayhead(t);
-    
-    // Force hide global waveform if clips exist
-    const strip = document.getElementById('waveformStrip');
-    if(strip && audioClips.length > 0) {
-      strip.style.display = 'none';
-    }
-    
-    if(typeof _rebuildWaveformOverlay === 'function') _rebuildWaveformOverlay();
-  });
+  // Anchor: keep the playhead at the same on-screen position (or center it if it
+  // was off-screen so it never "goes away" when zooming in).
+  const totalWNew = getTLTotalW();
+  const pxNew     = dur > 0 ? (vt / dur) * totalWNew : 0;
+  const target    = wasVisible ? (pxNew - screenX) : (pxNew - viewW / 2);
+  scroll.scrollLeft = Math.max(0, target);
+  updateTLPlayhead(t);
+
+  // Force hide global waveform if clips exist
+  const strip = document.getElementById('waveformStrip');
+  if(strip && audioClips.length > 0) strip.style.display = 'none';
+  if(typeof _rebuildWaveformOverlay === 'function') _rebuildWaveformOverlay();
 }
 
 function zoomToLevel(sliderVal) {
@@ -12218,10 +12377,16 @@ function updateStyle() {
     saveHistory('style change');
   }, 500);
   
-  const idx = currentGroup >= 0 ? currentGroup : (wordGroups.length > 0 ? 0 : -1);
+  // Resolve the group that's actually visible right now. When paused, prefer the
+  // group under the playhead so edits update the caption the user is looking at.
+  const paused = !audio || audio.paused;
+  let idx = currentGroup;
+  if(idx < 0 && audio && typeof getGroupAt === 'function') idx = getGroupAt(audio.currentTime);
+  if(idx < 0) idx = wordGroups.length > 0 ? 0 : -1;
 
   if(idx >= 0) {
-    if(audio && audio.paused) window._isAudioPaused = true;
+    if(paused) window._isAudioPaused = true;
+    const renderIdx = idx;
 
     if(_updateStyleRAF) cancelAnimationFrame(_updateStyleRAF);
     _updateStyleRAF = requestAnimationFrame(() => {
@@ -12231,11 +12396,15 @@ function updateStyle() {
       const applied = _tryInPlaceStyleUpdate();
 
       if(!applied) {
-        // Fallback: full rebuild only when structure needs change
+        // Fallback: full rebuild (also the path for custom-DOM styles so every
+        // change shows live even when paused).
         const disp = document.getElementById('captionDisplay');
         if(disp) { disp.dataset.groupIdx = ''; disp.dataset.animStyle = ''; }
-        renderGroup(idx);
+        currentGroup = renderIdx;
+        renderGroup(renderIdx);
       }
+      // Re-apply auto-fit after in-place updates (e.g. font-size drag) too.
+      if(applied && typeof applyPreviewTransform === 'function') applyPreviewTransform();
     });
   }
 
@@ -12265,7 +12434,7 @@ function _tryInPlaceStyleUpdate() {
   const _scaledFontSize = Math.max(2, (s.fontSize || 32) * _fontScale);
 
   // ── Build style snapshot to detect what changed ──
-  const snapshot = JSON.stringify({
+  const curObj = {
     ff: s.fontFamily,      fst: s.fontStyle,
     fs: s.fontSize,        tc: s.textColor,
     ts: s.textStroke,      sc: s.strokeColor,
@@ -12277,10 +12446,27 @@ function _tryInPlaceStyleUpdate() {
     bold: captionBold,     ital: captionItalic,
     und: captionUnder,     cs: captionTextCase,
     shad: s.shadowCSS,     glow: s.textGlowCSS,
-  });
+  };
+  const snapshot = JSON.stringify(curObj);
 
-  // ── If nothing structural changed, do smooth in-place update ──
-  if(_lastStyleSnapshot === snapshot) return true; // no change needed
+  // ── If nothing changed, no work needed ──
+  if(_lastStyleSnapshot === snapshot) return true;
+
+  // Decide in-place vs full render by WHAT changed:
+  //  • Smooth keys (continuously dragged — size/spacing/family/stroke/shadow) →
+  //    in-place, so dragging font size never rebuilds the DOM (no shake/wiggle).
+  //  • Color / gradient / case → full render (discrete clicks, no shake) so the
+  //    change also reaches custom-DOM styles (Border Pop Up etc.) correctly.
+  let prevObj = null;
+  try { prevObj = _lastStyleSnapshot ? JSON.parse(_lastStyleSnapshot) : null; } catch(_) {}
+  if(prevObj) {
+    const SMOOTH = new Set(['ff','fst','fs','ts','sc','ls','wg','lh','mw','px','py','bold','ital','und','shad','glow']);
+    const changed = Object.keys(curObj).filter(k => curObj[k] !== prevObj[k]);
+    if(changed.length && changed.some(k => !SMOOTH.has(k))) {
+      _lastStyleSnapshot = snapshot;   // record so the follow-up full render is stable
+      return false;                    // → caller does a full renderGroup()
+    }
+  }
 
   // ── Font family / weight / style changes need in-place update (no rebuild) ──
   const fsMap = {
@@ -12331,8 +12517,8 @@ function _tryInPlaceStyleUpdate() {
       chip.style.paintOrder = '';
     }
 
-    // Shadow / Glow
-    const shadowLayers = [s.shadowCSS, s.textGlowCSS].filter(Boolean).join(', ');
+    // Shadow / Glow — scale shadow with the caption (proportional at any size)
+    const shadowLayers = [buildShadowCSS(_fontScale), s.textGlowCSS].filter(Boolean).join(', ');
     if(shadowLayers) {
       if(s.textGradientOn) {
         chip.style.filter = _textShadowToDropShadowFilter(shadowLayers);
@@ -13979,7 +14165,11 @@ function onShadowColor(i, val) {
 // Multi-pass rendering: contact shadow + mid shadow + ambient glow
 // Creates real depth perception, not flat black shadow
 // ══════════════════════════════════════════════════════════════
-function buildShadowCSS() {
+function buildShadowCSS(scale) {
+  // `scale` scales shadow distance/blur/spread with the caption so the shadow
+  // stays proportional at any preview size (fixes the shadow vanishing when the
+  // caption is enlarged in fullscreen). Defaults to 1 (canvas-space values).
+  scale = scale || 1;
   const enabled = document.getElementById('shadowEnabled')?.checked;
   if(!enabled || shadows.length === 0) return '';
 
@@ -13987,11 +14177,11 @@ function buildShadowCSS() {
 
   shadows.forEach(sh => {
     const rad  = (sh.angle * Math.PI) / 180;
-    const x    = +(Math.cos(rad) * sh.dist).toFixed(1);
-    const y    = +(Math.sin(rad) * sh.dist).toFixed(1);
-    const blur = sh.size;
+    const x    = +(Math.cos(rad) * sh.dist * scale).toFixed(1);
+    const y    = +(Math.sin(rad) * sh.dist * scale).toFixed(1);
+    const blur = sh.size * scale;
     const op   = sh.opacity / 100;
-    const sp   = sh.spread || 0;
+    const sp   = (sh.spread || 0) * scale;
     const r    = parseInt(sh.color.slice(1,3),16);
     const g    = parseInt(sh.color.slice(3,5),16);
     const b    = parseInt(sh.color.slice(5,7),16);
@@ -18945,6 +19135,17 @@ function applyPreviewTransform() {
 
   // Store current scale for debugging + export
   disp.dataset.previewScale = String(getPreviewFontScale());
+
+  // ── AUTO-FIT: never let the caption overflow its max-width box / the canvas ──
+  // Measure natural content width, and if it exceeds the box, scale the whole
+  // caption down (around its center) so long words / huge fonts stay on-screen.
+  disp.style.transform = 'translate(-50%, -50%)';           // reset before measuring
+  const avail   = disp.clientWidth;
+  const natural = disp.scrollWidth;
+  let fit = 1;
+  if(avail > 0 && natural > avail + 1) fit = Math.max(0.05, avail / natural);
+  disp.style.transform = 'translate(-50%, -50%)' + (fit < 0.999 ? ' scale(' + fit.toFixed(4) + ')' : '');
+  disp.dataset.fitScale = String(fit);
 }
 
 // Real-time preview font size update — triggers re-render so scale is applied
@@ -20004,6 +20205,65 @@ const _ALL_WEIGHT_OPTS = [
   {value:'extrabold',  label:'ExtraBold'},
   {value:'condensed',  label:'Condensed'},
 ];
+
+// Enumerate fonts installed on this PC (Local Font Access API) and add them to
+// the font dropdown. Installed fonts render in both the DOM preview and the
+// canvas export (Chromium resolves them by family name).
+async function loadSystemFonts() {
+  const btn = document.getElementById('loadPcFontsBtn');
+  if(typeof window.queryLocalFonts !== 'function') {
+    showToast('⚠️ System-font access not available in this build');
+    return;
+  }
+  const orig = btn ? btn.textContent : '';
+  try {
+    if(btn) { btn.textContent = '⏳ Loading system fonts…'; btn.disabled = true; }
+    const fonts = await window.queryLocalFonts();   // may prompt for permission
+    const grp = document.getElementById('pcFontGroup');
+    if(!grp) return;
+    const seen = new Set();
+    const families = [];
+    for(const f of fonts) {
+      const fam = f.family;
+      if(!fam || seen.has(fam)) continue;
+      seen.add(fam); families.push(fam);
+    }
+    families.sort((a, b) => a.localeCompare(b));
+    grp.innerHTML = '';
+    for(const fam of families) {
+      const opt = document.createElement('option');
+      opt.value = /[\s'"]/.test(fam) ? `'${fam.replace(/'/g,'')}', sans-serif` : `${fam}, sans-serif`;
+      opt.textContent = fam;
+      try { opt.style.fontFamily = opt.value; } catch(_) {}   // preview each in its own font
+      grp.appendChild(opt);
+    }
+    grp.label = `── PC Fonts (${families.length}) ──`;
+    grp.style.display = '';
+    if(btn) { btn.textContent = `✓ ${families.length} PC fonts loaded`; btn.disabled = false; }
+    showToast(`✅ ${families.length} system fonts added to the list`);
+  } catch(err) {
+    console.warn('[fonts] queryLocalFonts failed:', err);
+    if(btn) { btn.textContent = orig || '＋ Load all fonts installed on this PC'; btn.disabled = false; }
+    showToast('⚠️ Could not access system fonts: ' + (err && err.message || err));
+  }
+}
+
+// Auto-load PC fonts on the FIRST user interaction (queryLocalFonts requires a
+// user gesture, so we can't call it at startup — this makes it feel automatic:
+// the moment the user clicks/keys anything, the full font list is populated).
+(function _autoLoadPcFonts() {
+  let done = false;
+  const run = () => {
+    if(done) return; done = true;
+    document.removeEventListener('pointerdown', run, true);
+    document.removeEventListener('keydown', run, true);
+    if(typeof loadSystemFonts === 'function' && typeof window.queryLocalFonts === 'function') {
+      loadSystemFonts();
+    }
+  };
+  document.addEventListener('pointerdown', run, true);
+  document.addEventListener('keydown', run, true);
+})();
 
 function updateFontWeights(fontFamily) {
   const sel = document.getElementById('fontStyleSelect');
@@ -22503,7 +22763,10 @@ function selectClip(clipId, opts = {}) {
   selectedClipId = primaryId;
 
   if(!silent) {
-    buildAudioClipTrack();
+    // Only update the selection highlight — do NOT rebuild the whole clip track.
+    // Rebuilding on mousedown destroyed the element the user just grabbed, which
+    // broke click-and-drag to move clips.
+    updateClipSelectionUI();
     updateAutoCapBtnState();
     _updateEditBtnStates();
   }
@@ -23526,41 +23789,28 @@ function _buildGapIndicators() {
     gapEl.dataset.leftId  = lc.id;
     gapEl.dataset.rightId = rc.id;
 
+    // Visual label (button look) — but clicks are handled by the WHOLE gap area
+    // so the entire gap is a hit target, not just a tiny button.
     if(pxWidth >= 28) {
       const cb = document.createElement('div');
       cb.className   = 'tl-gap-close-btn';
       cb.textContent = pxWidth > 80 ? '⟵ Close Gap ⟶' : (pxWidth > 40 ? '✕ Join' : '✕');
-      cb.title       = 'Click to close gap and join clips';
-      cb.style.cursor = 'pointer';
+      cb.style.pointerEvents = 'none';   // let the click fall through to gapEl
       cb.style.userSelect = 'none';
-      cb.addEventListener('mousedown', function(ev) {
-        ev.stopPropagation();
-        ev.preventDefault();
-      });
-      cb.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        ev.preventDefault();
-        const leftId = parseInt(gapEl.dataset.leftId);
-        const rightId = parseInt(gapEl.dataset.rightId);
-        console.log('[Close Gap] Joining clips ' + leftId + ' and ' + rightId);
-        _closeGap(leftId, rightId);
-      });
       gapEl.appendChild(cb);
-    } else {
-      gapEl.style.cursor = 'pointer';
-      gapEl.addEventListener('mousedown', function(ev) {
-        ev.stopPropagation();
-        ev.preventDefault();
-      });
-      gapEl.addEventListener('click', function(ev) {
-        ev.stopPropagation();
-        ev.preventDefault();
-        const leftId = parseInt(gapEl.dataset.leftId);
-        const rightId = parseInt(gapEl.dataset.rightId);
-        console.log('[Close Gap] Joining clips ' + leftId + ' and ' + rightId);
-        _closeGap(leftId, rightId);
-      });
     }
+
+    // Whole gap indicator is clickable (reliable hit target).
+    gapEl.style.cursor = 'pointer';
+    gapEl.addEventListener('mousedown', function(ev) { ev.stopPropagation(); ev.preventDefault(); });
+    gapEl.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const leftId = gapEl.dataset.leftId;
+      const rightId = gapEl.dataset.rightId;
+      console.log('[Close Gap] Joining clips ' + leftId + ' <-> ' + rightId);
+      _closeGap(leftId, rightId);
+    });
 
     container.appendChild(gapEl);
   }
@@ -23568,11 +23818,13 @@ function _buildGapIndicators() {
 
 // ── Close gap: ripple-shift everything from rightClip onward ──
 function _closeGap(leftClipId, rightClipId) {
-  const lc = audioClips.find(function(c) { return c.id === leftClipId; });
-  const rc = audioClips.find(function(c) { return c.id === rightClipId; });
-  
+  // Match loosely — clip ids come from two schemes (Date.now() and a counter),
+  // and dataset values are strings, so compare as strings to avoid mismatches.
+  const lc = audioClips.find(function(c) { return String(c.id) === String(leftClipId); });
+  const rc = audioClips.find(function(c) { return String(c.id) === String(rightClipId); });
+
   if(!lc || !rc) {
-    console.warn('[Close Gap] Clips not found');
+    console.warn('[Close Gap] Clips not found', leftClipId, rightClipId);
     showToast('⚠️ Clips not found');
     return;
   }
@@ -23641,6 +23893,513 @@ function _closeGap(leftClipId, rightClipId) {
   showToast('✅ Gap closed — ' + gapDur.toFixed(1) + 's removed');
   console.log('[Close Gap] Success — shifted ' + gapDur.toFixed(2) + 's');
 }
+
+// Close EVERY gap so all clips become contiguous (join split parts back together).
+// Reliable alternative to clicking each tiny gap indicator.
+function closeAllGaps() {
+  if(!audioClips || audioClips.length < 2) { showToast('⚠️ Need 2+ clips to join'); return; }
+  let closed = 0, guard = 0;
+  while(guard++ < 200) {
+    const sorted = [...audioClips].sort(function(a,b){ return a.timelineStart - b.timelineStart; });
+    let did = false;
+    for(let i = 0; i < sorted.length - 1; i++) {
+      if(sorted[i+1].timelineStart - sorted[i].timelineEnd > 0.04) {
+        _closeGap(sorted[i].id, sorted[i+1].id);
+        closed++; did = true; break;   // restart: _closeGap mutated the array
+      }
+    }
+    if(!did) break;
+  }
+  showToast(closed ? ('✅ Joined clips — ' + closed + ' gap(s) closed') : '✓ No gaps to close');
+}
+
+// ═════════════════════════════════════════════════════════════════
+// SMART CUT — AI dead-space & filler removal (Phase 1: analysis+preview)
+// Works off masterWords (word-level timestamps, media seconds). Cached
+// analysis + instant rule recompute so slider changes are instant.
+// ═════════════════════════════════════════════════════════════════
+const _SC_FILLER_DEFAULT = ['um','umm','uh','uhh','hmm','hm','er','err','ah','like','you know','basically','actually','i mean','sort of','kind of'];
+window._scFillerWords = _SC_FILLER_DEFAULT.slice();
+let _scAnalysis = null;      // cached raw analysis (independent of thresholds)
+let _scDetections = [];      // current detections (depend on settings)
+let _scSnapshot = null;      // undo snapshot after apply
+
+const _SC_TYPE_COLORS = {
+  PAUSE_VERY_LONG: '#ff4d6d', PAUSE_LONG: '#ff8c42', PAUSE_SHORT: '#ffd23f',
+  FILLER_WORD: '#9d7eff', EDGE_SILENCE: '#6b7280', BREATH: '#4dd4c8'
+};
+const _SC_TYPE_LABEL = {
+  PAUSE_VERY_LONG: 'Very long', PAUSE_LONG: 'Long pause', PAUSE_SHORT: 'Short pause',
+  FILLER_WORD: 'Filler', EDGE_SILENCE: 'Edge silence', BREATH: 'Breath'
+};
+
+function _scMediaDur() {
+  if(audio && audio.duration && !isNaN(audio.duration)) return audio.duration;
+  if(masterWords && masterWords.length) return masterWords[masterWords.length - 1].end + 0.2;
+  return 0;
+}
+
+// Build the cached analysis (gaps + fillers + edges). Independent of thresholds.
+function analyzeSmartCut() {
+  const words = (typeof masterWords !== 'undefined' && masterWords.length) ? masterWords.slice() : [];
+  const mediaDur = _scMediaDur();
+  const gaps = [];
+  for(let i = 0; i < words.length - 1; i++) {
+    const gap = words[i+1].start - words[i].end;
+    if(gap > 0.05) gaps.push({ prevEnd: words[i].end, nextStart: words[i+1].start, dur: gap });
+  }
+  const fillerSet = (window._scFillerWords || _SC_FILLER_DEFAULT).map(f => f.toLowerCase().trim());
+  const fillers = [];
+  words.forEach(w => {
+    const clean = (w.text || '').toLowerCase().replace(/[.,!?;:"']/g, '').trim();
+    if(fillerSet.includes(clean)) fillers.push({ start: w.start, end: w.end, text: w.text });
+  });
+  const leadGap  = words.length ? words[0].start : 0;
+  const trailGap = words.length ? Math.max(0, mediaDur - words[words.length-1].end) : 0;
+  _scAnalysis = { words, mediaDur, gaps, fillers, leadGap, trailGap };
+  return _scAnalysis;
+}
+
+function _scSettings() {
+  const num = (id, def) => { const el = document.getElementById(id); return el ? (parseFloat(el.value) || def) : def; };
+  const chk = (id, def) => { const el = document.getElementById(id); return el ? el.checked : def; };
+  const mode = (document.getElementById('scMode') || {}).value || 'balanced';
+  const minConf = mode === 'conservative' ? 0.9 : mode === 'aggressive' ? 0.5 : 0.72;
+  return {
+    removeLong: chk('scRemoveLong', true),  longThr: num('scLongThr', 0.8),
+    reduceShort: chk('scReduceShort', true), shortThr: num('scShortThr', 0.4),
+    preserve: num('scPreserve', 0.1),
+    removeFiller: chk('scRemoveFiller', true),
+    removeEdges: chk('scRemoveEdges', true),
+    removeBreath: chk('scRemoveBreath', true),
+    breathSens: ((document.getElementById('scBreathSens')||{}).value) || 'medium',
+    mode, minConf
+  };
+}
+
+// Peak waveform energy (0..1) within a media-time range. Returns -1 if no
+// waveform is available (caller then skips energy-gating). Used to avoid cutting
+// "pauses" that actually contain speech (overlapping voices in a podcast).
+function _scMaxEnergy(a, start, end) {
+  const clip = (audioClips && audioClips[0]) ? audioClips[0] : null;
+  const wf = (window._fileWaveforms && clip) ? window._fileWaveforms[clip.fileId] : null;
+  if(!wf || !wf.length || !a.mediaDur || end <= start) return -1;
+  const N = wf.length;
+  const i0 = Math.max(0, Math.floor((start / a.mediaDur) * (N - 1)));
+  const i1 = Math.min(N - 1, Math.ceil((end / a.mediaDur) * (N - 1)));
+  let mx = 0;
+  for(let i = i0; i <= i1; i++) if(wf[i] > mx) mx = wf[i];
+  return mx;
+}
+
+// Audio-based breath detection: scans the per-file waveform inside inter-word
+// gaps for audible-but-soft regions (breaths sit between words, quieter than
+// speech, louder than silence). Returns [{start,end}] in media seconds.
+function _scDetectBreaths(a, s) {
+  const out = [];
+  const clip = (audioClips && audioClips[0]) ? audioClips[0] : null;
+  const fileId = clip ? clip.fileId : null;
+  const wf = (window._fileWaveforms && fileId != null) ? window._fileWaveforms[fileId] : null;
+  if(!wf || !wf.length || !a.mediaDur) return out;
+  const N = wf.length;
+  const idxAt = t => Math.max(0, Math.min(N - 1, Math.round((t / a.mediaDur) * (N - 1))));
+  const floor     = s.breathSens === 'high' ? 0.035 : s.breathSens === 'low' ? 0.10 : 0.06; // above = sound
+  const speechCap = s.breathSens === 'high' ? 0.48  : s.breathSens === 'low' ? 0.30 : 0.40; // below = not speech
+  // Scan every inter-word gap (even short ones — breaths are often < 0.4s)
+  a.gaps.forEach(g => {
+    const i0 = idxAt(g.prevEnd), i1 = idxAt(g.nextStart);
+    let runStart = -1;
+    for(let i = i0; i <= i1; i++) {
+      const e = wf[i];
+      const isBreath = e > floor && e < speechCap;
+      if(isBreath && runStart < 0) runStart = i;
+      else if(!isBreath && runStart >= 0) {
+        const tS = (runStart / (N - 1)) * a.mediaDur, tE = (i / (N - 1)) * a.mediaDur;
+        if(tE - tS >= 0.07) out.push({ start: tS, end: tE });
+        runStart = -1;
+      }
+    }
+    if(runStart >= 0) {
+      const tS = (runStart / (N - 1)) * a.mediaDur, tE = (i1 / (N - 1)) * a.mediaDur;
+      if(tE - tS >= 0.07) out.push({ start: tS, end: tE });
+    }
+  });
+  return out;
+}
+
+// Recompute detections from cached analysis + current settings (instant).
+function recomputeSmartCut() {
+  if(!_scAnalysis) analyzeSmartCut();
+  const a = _scAnalysis, s = _scSettings();
+  const dets = [];
+  let idc = 0;
+  // Speech-level energy floor: a "pause" that actually contains audio this loud
+  // is NOT dead space — it's someone talking (e.g. the other podcast speaker
+  // during an overlap). Keep those instead of cutting them.
+  const speechFloor = s.mode === 'aggressive' ? 0.50 : s.mode === 'conservative' ? 0.25 : 0.35;
+
+  const push = (type, cutStart, cutEnd, conf, text, forceKeep) => {
+    if(cutEnd - cutStart <= 0.02) return;
+    dets.push({
+      id: 'det_' + (idc++), type,
+      startTime: +cutStart.toFixed(3), endTime: +cutEnd.toFixed(3),
+      duration: +(cutEnd - cutStart).toFixed(3),
+      confidence: conf, text: text || '',
+      action: forceKeep ? 'keep' : (conf >= s.minConf ? 'remove' : 'keep')
+    });
+  };
+
+  // Pauses (cut = gap minus preserved lead) — but only if the gap is actually
+  // quiet. If the waveform shows speech-level sound in the gap, keep it.
+  a.gaps.forEach(g => {
+    const cutStart = g.prevEnd + s.preserve;
+    const cutEnd = g.nextStart;
+    const energy = _scMaxEnergy(a, cutStart, cutEnd);   // -1 if no waveform
+    const hasSpeech = energy >= 0 && energy > speechFloor;
+    const note = hasSpeech ? 'audio present (kept)' : '';
+    if(g.dur >= 2.0) { if(s.removeLong) push('PAUSE_VERY_LONG', cutStart, cutEnd, 0.98, note, hasSpeech); }
+    else if(g.dur >= s.longThr) { if(s.removeLong) push('PAUSE_LONG', cutStart, cutEnd, 0.95, note, hasSpeech); }
+    else if(g.dur >= s.shortThr) { if(s.reduceShort) push('PAUSE_SHORT', cutStart, cutEnd, 0.82, note, hasSpeech); }
+  });
+
+  // Breaths (audio-based) — cut the audible soft region inside gaps
+  if(s.removeBreath) {
+    _scDetectBreaths(a, s).forEach(b => push('BREATH', b.start, b.end, 0.8));
+  }
+
+  // Filler words (cut the word's media span)
+  if(s.removeFiller) a.fillers.forEach(f => push('FILLER_WORD', f.start, f.end, 0.9, f.text));
+
+  // Edge silence (also gated on energy — don't trim if there's audio there)
+  if(s.removeEdges) {
+    if(a.leadGap > 0.3) {
+      const e = _scMaxEnergy(a, 0, Math.max(0, a.leadGap - s.preserve));
+      push('EDGE_SILENCE', 0, Math.max(0, a.leadGap - s.preserve), 0.9, e > speechFloor ? 'audio present (kept)' : '', e >= 0 && e > speechFloor);
+    }
+    if(a.trailGap > 0.3) {
+      const s0 = (a.mediaDur - a.trailGap) + s.preserve;
+      const e = _scMaxEnergy(a, s0, a.mediaDur);
+      push('EDGE_SILENCE', s0, a.mediaDur, 0.9, e > speechFloor ? 'audio present (kept)' : '', e >= 0 && e > speechFloor);
+    }
+  }
+
+  dets.sort((x, y) => x.startTime - y.startTime);
+  _scDetections = dets;
+  renderSmartCutList();
+  updateSmartCutSummary();
+  _scRenderTimelineMarkers();
+}
+
+// Render the AI detection markers onto the timeline caption track, positioned by
+// time (same coordinate space as caption blocks). Click a marker to keep/remove.
+function _scRenderTimelineMarkers() {
+  const track = document.getElementById('tlAiTrack');
+  if(!track) return;
+  // Detections are in ORIGINAL media time; once Smart Cut is applied the timeline
+  // no longer matches, so hide markers after apply.
+  if(!_scDetections || !_scDetections.length || _scSnapshot) { track.innerHTML = ''; track.style.width = '0'; return; }
+  const dur    = (typeof getTLDur === 'function') ? getTLDur() : 0;
+  const totalW = (typeof getTLTotalW === 'function') ? getTLTotalW() : 0;
+  if(!dur || !totalW) { track.innerHTML = ''; return; }
+  track.style.width = totalW + 'px';
+  track.innerHTML = _scDetections.map(d => {
+    const col   = _SC_TYPE_COLORS[d.type] || '#888';
+    const left  = (d.startTime / dur) * totalW;
+    const w     = Math.max(3, (d.duration / dur) * totalW);
+    const label = (_SC_TYPE_LABEL[d.type] || d.type) + ' ' + d.duration.toFixed(2) + 's (' + Math.round(d.confidence*100) + '%) — click to toggle';
+    return '<div class="tl-ai-marker ' + (d.action==='keep'?'keep':'') + '" ' +
+      'style="left:' + left + 'px;width:' + w + 'px;background:' + col + ';" ' +
+      'title="' + label + '" onclick="event.stopPropagation();_scToggle(\'' + d.id + '\')"></div>';
+  }).join('');
+}
+
+function renderSmartCut() {
+  analyzeSmartCut();
+  recomputeSmartCut();
+}
+
+function _scMergedRemoveRanges() {
+  const ranges = _scDetections.filter(d => d.action === 'remove')
+    .map(d => [d.startTime, d.endTime]).sort((a,b) => a[0] - b[0]);
+  const merged = [];
+  ranges.forEach(r => {
+    const last = merged[merged.length-1];
+    if(last && r[0] <= last[1] + 0.001) last[1] = Math.max(last[1], r[1]);
+    else merged.push(r.slice());
+  });
+  return merged;
+}
+
+function updateSmartCutSummary() {
+  const box = document.getElementById('scSummary');
+  if(!box) return;
+  if(!masterWords || !masterWords.length) {
+    box.innerHTML = '<div class="sc-summary-box" style="color:var(--text3);font-size:12px;">Generate captions first — Smart Cut needs word timings.</div>';
+    return;
+  }
+  const removed = _scMergedRemoveRanges().reduce((s, r) => s + (r[1]-r[0]), 0);
+  const orig = _scMediaDur();
+  const finalDur = Math.max(0, orig - removed);
+  const byType = {};
+  _scDetections.filter(d => d.action === 'remove').forEach(d => { byType[d.type] = (byType[d.type]||0) + d.duration; });
+  const rows = Object.keys(byType).map(t =>
+    `<div class="sc-summary-row"><span>${_SC_TYPE_LABEL[t]||t}</span><span>${byType[t].toFixed(1)}s</span></div>`).join('');
+
+  // Warn if breath removal is on but no waveform is available to analyze.
+  const s = _scSettings();
+  const clip = (audioClips && audioClips[0]) ? audioClips[0] : null;
+  const wf = (window._fileWaveforms && clip) ? window._fileWaveforms[clip.fileId] : null;
+  const breathNote = (s.removeBreath && (!wf || !wf.length))
+    ? '<div class="sc-summary-row" style="color:#ff8c42;">⚠️ Breath detection needs the audio waveform (unavailable for this file — very large files skip it).</div>'
+    : '';
+
+  box.innerHTML =
+    '<div class="sc-summary-box">' +
+      '<div class="sc-summary-big"><span style="font-size:13px;color:var(--text2);">Original</span><span style="font-weight:800;color:var(--text);">' + fmt(orig) + '</span></div>' +
+      '<div class="sc-summary-big"><span style="font-size:13px;color:var(--accent2);">Smart Cut</span><span style="font-weight:900;color:var(--accent2);font-size:16px;">' + fmt(finalDur) + '</span></div>' +
+      '<div class="sc-summary-row" style="border-top:1px solid rgba(255,255,255,0.08);margin-top:6px;padding-top:8px;"><span>Removed</span><span style="color:#ff8c42;font-weight:700;">' + fmt(removed) + '</span></div>' +
+      rows + breathNote +
+    '</div>';
+}
+
+function renderSmartCutList() {
+  const list = document.getElementById('scList');
+  if(!list) return;
+  if(!_scDetections.length) {
+    list.innerHTML = '<div style="color:var(--text3);font-size:11px;padding:8px 0;">No dead space or filler detected with current settings.</div>';
+    return;
+  }
+  list.innerHTML = _scDetections.map(d => {
+    const col = _SC_TYPE_COLORS[d.type] || '#888';
+    const label = _SC_TYPE_LABEL[d.type] || d.type;
+    const info = (d.text ? '"' + d.text + '" · ' : '') + d.duration.toFixed(2) + 's · ' + fmt(d.startTime) + ' · ' + Math.round(d.confidence*100) + '%';
+    return '<div class="sc-det ' + (d.action==='keep'?'keep':'') + '" onclick="_scSeek(' + d.startTime + ')">' +
+      '<span class="sc-det-type" style="background:' + col + '22;color:' + col + ';border:1px solid ' + col + '55;">' + label + '</span>' +
+      '<span class="sc-det-info">' + info + '</span>' +
+      '<span class="sc-det-toggle" onclick="event.stopPropagation();_scToggle(\'' + d.id + '\')">' + (d.action==='remove'?'✂ Remove':'Keep') + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+function _scToggle(id) {
+  const d = _scDetections.find(x => x.id === id);
+  if(!d) return;
+  d.action = d.action === 'remove' ? 'keep' : 'remove';
+  renderSmartCutList();
+  updateSmartCutSummary();
+  _scRenderTimelineMarkers();
+}
+
+function _scSeek(t) {
+  if(audio) { audio.currentTime = t; currentGroup = -2; lastActiveWord = -2; if(typeof onTimeUpdate==='function') onTimeUpdate(); }
+}
+
+function editFillerWords() {
+  const cur = (window._scFillerWords || _SC_FILLER_DEFAULT).join(', ');
+  const next = prompt('Filler words (comma-separated) — these get cut when found:', cur);
+  if(next == null) return;
+  window._scFillerWords = next.split(',').map(s => s.trim()).filter(Boolean);
+  analyzeSmartCut();
+  recomputeSmartCut();
+}
+
+// ── Apply / Undo (Phase 2 — data-level; single-clip; reversible) ──
+function applySmartCut() {
+  if(!masterWords || !masterWords.length) { showToast('⚠️ Generate captions first'); return; }
+  if(!audioClips || !audioClips.length) { showToast('⚠️ No clip on the timeline'); return; }
+  const removeRanges = _scMergedRemoveRanges();   // timeline-time ranges to cut
+  if(!removeRanges.length) { showToast('✓ Nothing marked for removal'); return; }
+
+  // Snapshot for undo
+  _scSnapshot = {
+    audioClips: JSON.parse(JSON.stringify(audioClips)),
+    masterWords: JSON.parse(JSON.stringify(masterWords)),
+    wordGroups: JSON.parse(JSON.stringify(wordGroups)),
+    clipCaptionGroups: JSON.parse(JSON.stringify(clipCaptionGroups || {})),
+    mediaEffEnd: window._mediaEffectiveEnd
+  };
+  if(typeof saveHistory === 'function') saveHistory('smart cut');
+
+  const clips = audioClips.slice().sort((a, b) => a.timelineStart - b.timelineStart);
+  const timelineEnd = Math.max.apply(null, clips.map(c => c.timelineEnd));
+
+  // Keep ranges = complement of removeRanges within [0, timelineEnd]
+  const keeps = [];
+  let cursor = 0;
+  removeRanges.forEach(r => { if(r[0] > cursor) keeps.push([cursor, r[0]]); cursor = Math.max(cursor, r[1]); });
+  if(cursor < timelineEnd) keeps.push([cursor, timelineEnd]);
+
+  // Map a timeline time to the NEW timeline (subtract removed durations before it)
+  function mapTime(t) {
+    let removedBefore = 0;
+    for(const r of removeRanges) {
+      if(t >= r[1]) removedBefore += (r[1]-r[0]);
+      else if(t > r[0]) removedBefore += (t - r[0]);
+    }
+    return Math.max(0, t - removedBefore);
+  }
+  const inRemoved = (t) => removeRanges.some(r => t >= r[0] && t < r[1]);
+
+  // Slice EVERY clip against the keep ranges → contiguous keep-segments.
+  // Works for any number of clips; empty gaps between clips are dropped too.
+  const newClips = [];
+  let tl = 0;
+  keeps.forEach(k => {
+    clips.forEach(c => {
+      const os = Math.max(k[0], c.timelineStart);
+      const oe = Math.min(k[1], c.timelineEnd);
+      if(oe - os <= 0.02) return;                     // no overlap with this clip
+      const span = Math.max(0.001, c.timelineEnd - c.timelineStart);
+      const to   = (c.trimOut != null) ? c.trimOut : ((c.trimIn || 0) + span);
+      const rate = (to - (c.trimIn || 0)) / span;     // source-per-timeline (≈1)
+      const segDur = oe - os;
+      newClips.push(Object.assign({}, JSON.parse(JSON.stringify(c)), {
+        id: _clipIdCounter++,
+        trimIn:  (c.trimIn || 0) + (os - c.timelineStart) * rate,
+        trimOut: (c.trimIn || 0) + (oe - c.timelineStart) * rate,
+        timelineStart: tl,
+        timelineEnd: tl + segDur,
+      }));
+      tl += segDur;
+    });
+  });
+  audioClips = newClips;
+
+  // Remap captions: drop words fully inside removed ranges; shift kept words to
+  // the new timeline. Words that straddle a cut are kept but compressed.
+  const remapped = masterWords
+    .filter(w => !(inRemoved(w.start) && inRemoved(w.end)))
+    .map(w => ({ text: w.text, start: mapTime(w.start), end: mapTime(w.end) }));
+
+  // ── Fix overlap bug: enforce non-overlapping, monotonic times so a word at the
+  // end of one segment never overlaps the first word of the next segment. (Some
+  // transcription APIs already emit slightly overlapping word times; compressing
+  // the cut gap can make that worse.) Clamp each start up to the previous end. ──
+  const MIN_W = 0.06; // minimum word duration
+  let prevEnd = -Infinity;
+  for(let i = 0; i < remapped.length; i++) {
+    if(remapped[i].start < prevEnd) remapped[i].start = prevEnd;
+    if(remapped[i].end < remapped[i].start + MIN_W) remapped[i].end = remapped[i].start + MIN_W;
+    prevEnd = remapped[i].end;
+  }
+  masterWords = remapped;
+  if(typeof buildGroupsFromMaster === 'function') buildGroupsFromMaster();
+
+  window._mediaEffectiveEnd = tl;
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(typeof buildTimeline === 'function') buildTimeline();
+  if(typeof _buildGapIndicators === 'function') _buildGapIndicators();
+
+  const removedTotal = removeRanges.reduce((s, r) => s + (r[1]-r[0]), 0);
+  // Detections are now stale (timeline changed) — clear so markers hide and a
+  // fresh analysis runs next time the tab is opened.
+  _scAnalysis = null; _scDetections = [];
+  if(typeof _scRenderTimelineMarkers === 'function') _scRenderTimelineMarkers();
+  showToast('✂ Smart Cut applied — removed ' + fmt(removedTotal) + ' · use Undo to revert');
+  const undoBtn = document.getElementById('scUndoBtn'); if(undoBtn) undoBtn.style.display = '';
+}
+
+function undoSmartCut() {
+  if(!_scSnapshot) { showToast('Nothing to undo'); return; }
+  audioClips = _scSnapshot.audioClips;
+  masterWords = _scSnapshot.masterWords;
+  wordGroups = _scSnapshot.wordGroups;
+  if(typeof clipCaptionGroups !== 'undefined') {
+    Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
+    Object.assign(clipCaptionGroups, _scSnapshot.clipCaptionGroups || {});
+  }
+  window._mediaEffectiveEnd = _scSnapshot.mediaEffEnd;
+  _scSnapshot = null;
+  _scAnalysis = null; _scDetections = [];   // re-analyze the restored words on next open
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(typeof buildTimeline === 'function') buildTimeline();
+  if(typeof refreshCaptionList === 'function') refreshCaptionList();
+  const undoBtn = document.getElementById('scUndoBtn'); if(undoBtn) undoBtn.style.display = 'none';
+  showToast('↩ Smart Cut reverted');
+}
+
+// ── Export the current timeline as FCPXML for Premiere Pro ──
+// Each timeline clip becomes an asset-clip referencing the ORIGINAL media with
+// its source in/out — so in Premiere you can drag clip edges to trim OR extend
+// (the full source is available), and reposition freely.
+function exportPremiereXML() {
+  if(!audioClips || !audioClips.length) { showToast('⚠️ No clips on the timeline'); return; }
+
+  // Collect the media files used (one <asset> each)
+  const fileOrder = [];
+  const fileIdx = {};
+  audioClips.forEach(c => { if(!(c.fileId in fileIdx)) { fileIdx[c.fileId] = fileOrder.length; fileOrder.push(c.fileId); } });
+
+  const pf0  = projectFiles.find(f => f.id === fileOrder[0]) || {};
+  const meta = pf0.meta || {};
+  const fps  = meta.fps || (audioClips[0] && audioClips[0].fps) || 30;
+  const W    = meta.width  || pf0.videoWidth  || 1920;
+  const H    = meta.height || pf0.videoHeight || 1080;
+
+  // Frame-accurate rational time (Premiere is picky about non-frame times)
+  const near = (a, b) => Math.abs(a - b) < 0.05;
+  let fpsNum, fpsDen;
+  if(near(fps, 29.97))      { fpsNum = 30000; fpsDen = 1001; }
+  else if(near(fps, 23.976)){ fpsNum = 24000; fpsDen = 1001; }
+  else if(near(fps, 59.94)) { fpsNum = 60000; fpsDen = 1001; }
+  else                      { fpsNum = Math.round(fps); fpsDen = 1; }
+  const T = (t) => { const frames = Math.round(t * fpsNum / fpsDen); return (frames * fpsDen) + '/' + fpsNum + 's'; };
+  const frameDur = fpsDen + '/' + fpsNum + 's';
+
+  const fileUrl = (p) => 'file://' + ((p && p.charAt(0) === '/') ? '' : '/') + String(p || '').replace(/\\/g, '/');
+
+  let resources = '<format id="r1" name="FFVideoFormat" frameDuration="' + frameDur + '" width="' + W + '" height="' + H + '"/>';
+  fileOrder.forEach((fid, i) => {
+    const pf = projectFiles.find(f => f.id === fid) || {};
+    const durSrc = (pf.meta && pf.meta.duration) || pf.duration || 36000;
+    resources += '<asset id="a' + i + '" name="' + _seqEsc(pf.name || ('media' + i)) + '" ' +
+      'start="0s" duration="' + T(durSrc) + '" hasVideo="1" hasAudio="1" audioSources="1" audioChannels="2" format="r1">' +
+      '<media-rep kind="original-media" src="' + fileUrl(pf.path) + '"/></asset>';
+  });
+
+  const sorted = audioClips.slice().sort((a, b) => a.timelineStart - b.timelineStart);
+  const seqDur = Math.max.apply(null, sorted.map(c => c.timelineEnd));
+  let spine = '';
+  sorted.forEach((c, i) => {
+    spine += '<asset-clip ref="a' + fileIdx[c.fileId] + '" ' +
+      'offset="' + T(c.timelineStart) + '" ' +
+      'name="' + _seqEsc('seg' + (i + 1)) + '" ' +
+      'start="' + T(c.trimIn || 0) + '" ' +
+      'duration="' + T(c.timelineEnd - c.timelineStart) + '"/>';
+  });
+
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n' +
+    '<fcpxml version="1.9">\n' +
+    '<resources>' + resources + '</resources>\n' +
+    '<library><event name="Caption Studio Pro">' +
+    '<project name="Smart Cut Timeline">' +
+    '<sequence format="r1" duration="' + T(seqDur) + '" tcStart="0s" tcFormat="NDF">' +
+    '<spine>' + spine + '</spine></sequence></project></event></library>\n' +
+    '</fcpxml>';
+
+  const blob = new Blob([xml], { type: 'application/xml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (window._audioFileName || 'project').replace(/\.[^.]+$/, '') + '_premiere.fcpxml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showToast('🎬 Premiere XML exported — in Premiere: File → Import → select the .fcpxml');
+}
+
+// Keep the AI detection markers aligned whenever the timeline rebuilds (zoom,
+// scroll-width change, etc.) — wrap buildTimeline like the gap indicators do.
+(function() {
+  const _origBT = window.buildTimeline;
+  if(typeof _origBT === 'function') {
+    window.buildTimeline = function() {
+      _origBT.apply(this, arguments);
+      if(typeof _scRenderTimelineMarkers === 'function') {
+        requestAnimationFrame(_scRenderTimelineMarkers);
+      }
+    };
+  }
+})();
 
 // ── Auto rebuild gap indicators after split / delete / build ──
 // ── Consolidated wrapper ──
@@ -24208,8 +24967,10 @@ function _captureSequenceState() {
     projects: (typeof projects !== 'undefined' ? projects : []),
     activeProjectId: (typeof activeProjectId !== 'undefined' ? activeProjectId : null),
     currentAnimStyle,
-    animStyleProps: (typeof animStyleProps !== 'undefined' ? animStyleProps : {}),
-    layerAnimStyles: (typeof layerAnimStyles !== 'undefined' ? layerAnimStyles : {}),
+    // Deep-copy so each sequence keeps its own style config (animStyleProps is
+    // a shared `const` object mutated in place on restore).
+    animStyleProps: (typeof animStyleProps !== 'undefined' ? JSON.parse(JSON.stringify(animStyleProps)) : {}),
+    layerAnimStyles: (typeof layerAnimStyles !== 'undefined' ? JSON.parse(JSON.stringify(layerAnimStyles)) : {}),
     animApplyAll: (typeof animApplyAll !== 'undefined' ? animApplyAll : true),
     shadows: (typeof shadows !== 'undefined' ? shadows : []),
     wordsPerGroup, lineBreakEnabled, lineBreakAt,
@@ -24237,6 +24998,9 @@ function _clearWorkingState() {
   audioClips = []; projectFiles = []; wordGroups = []; masterWords = []; words = [];
   if(typeof clipCaptionGroups !== 'undefined') Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
   window._fileWaveforms = {}; if(typeof waveformData !== 'undefined') waveformData = null;
+  // Own canvas per sequence: reassign (prior sequence's snapshot keeps its array).
+  if(typeof projects !== 'undefined') projects = [];
+  if(typeof activeProjectId !== 'undefined') activeProjectId = null;
   if(typeof selectedClipId !== 'undefined') selectedClipId = null;
   if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.clear) selectedLayerIds.clear();
   if(typeof selectedGi !== 'undefined') selectedGi = -1;
@@ -24308,7 +25072,11 @@ function _applySequenceState(state) {
   if(state.projects && typeof projects !== 'undefined') projects = state.projects;
   if(typeof activeProjectId !== 'undefined' && state.activeProjectId != null) activeProjectId = state.activeProjectId;
   currentAnimStyle = state.currentAnimStyle || 0;
-  if(state.animStyleProps && typeof animStyleProps !== 'undefined') animStyleProps = state.animStyleProps;
+  // animStyleProps is declared `const` — mutate in place instead of reassigning.
+  if(state.animStyleProps && typeof animStyleProps !== 'undefined') {
+    Object.keys(animStyleProps).forEach(k => delete animStyleProps[k]);
+    Object.assign(animStyleProps, state.animStyleProps);
+  }
   if(state.layerAnimStyles && typeof layerAnimStyles !== 'undefined') layerAnimStyles = state.layerAnimStyles;
   if(typeof animApplyAll !== 'undefined' && state.animApplyAll !== undefined) animApplyAll = state.animApplyAll;
   if(state.shadows && typeof shadows !== 'undefined') shadows = state.shadows;

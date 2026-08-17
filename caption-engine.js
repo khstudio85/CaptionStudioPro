@@ -946,6 +946,17 @@
       ctx.save();
       ctx.globalAlpha = 1;
 
+      // ── AUTO-FIT: scale the whole caption down (around its center) if its
+      // widest line would exceed the max-width box, so long words / huge fonts
+      // never overflow the frame. Mirrors the preview's auto-fit. ──
+      const availW = W * (Math.min(spec.maxWidth || 85, 100) / 100);
+      if(layout.totalWidth > availW && layout.totalWidth > 0) {
+        const fit = availW / layout.totalWidth;
+        ctx.translate(layout.centerX, layout.centerY);
+        ctx.scale(fit, fit);
+        ctx.translate(-layout.centerX, -layout.centerY);
+      }
+
       // ── Container background box (spec §caption background) ──
       if(state.containerBg || (spec.bgEnabled && spec.bgOpacity > 0)) {
         const bg = state.containerBg || {

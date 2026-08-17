@@ -63,6 +63,11 @@ function createWindow() {
     });
   });
 
+  // Local single-user app: allow permission requests (notably 'local-fonts' so
+  // the Font panel can enumerate fonts installed on this PC via queryLocalFonts()).
+  mainWindow.webContents.session.setPermissionRequestHandler((wc, permission, callback) => callback(true));
+  try { mainWindow.webContents.session.setPermissionCheckHandler(() => true); } catch(_) {}
+
   mainWindow.loadFile('index.html');
   mainWindow.webContents.openDevTools();
 }
