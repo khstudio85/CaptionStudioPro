@@ -5409,6 +5409,25 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 }
 .tl-ai-marker:hover { opacity:1; height:16px; }
 .tl-ai-marker.keep { opacity:0.3; }
+/* Focused (selected via marker click or the Detected list) */
+.tl-ai-marker.focus {
+  opacity:1; height:18px;
+  outline:2px solid #fff; outline-offset:-1px;
+  box-shadow:0 0 10px rgba(255,255,255,0.65);
+  z-index:31;
+}
+/* Edge handles — drag to extend / shrink the detected range */
+.tl-ai-handle {
+  position:absolute; top:0; bottom:0; width:7px;
+  cursor:ew-resize; pointer-events:all;
+  background:rgba(255,255,255,0.35);
+}
+.tl-ai-handle.l { left:-1px;  border-radius:2px 0 0 2px; }
+.tl-ai-handle.r { right:-1px; border-radius:0 2px 2px 0; }
+.tl-ai-handle:hover { background:#fff; }
+.tl-ai-marker:hover .tl-ai-handle { background:rgba(255,255,255,0.7); }
+/* Focused row in the Detected list */
+.sc-det.focus { border-color:#fff; box-shadow:0 0 0 1px rgba(255,255,255,0.35) inset; }
 </style>
 </head>
 <body>
@@ -7188,6 +7207,10 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
       <div id="scSummary" style="padding:12px 14px;"></div>
 
       <!-- Buttons -->
+      <div style="padding:0 14px 8px;">
+        <button class="sc-btn" id="scPreviewBtn" style="width:100%;" onclick="previewSmartCut()"
+          title="Play the cut result temporarily — auto-reverts when it ends or you stop it">▶ Preview Smart Cut</button>
+      </div>
       <div style="display:flex;gap:8px;padding:0 14px 8px;">
         <button class="sc-btn sc-btn-primary" id="scApplyBtn" onclick="applySmartCut()">✂ Apply Smart Cut</button>
         <button class="sc-btn" id="scUndoBtn" onclick="undoSmartCut()" style="display:none;">↩ Undo</button>
@@ -24370,6 +24393,11 @@ window._scFillerWords = _SC_FILLER_DEFAULT.slice();
 let _scAnalysis = null;      // cached raw analysis (independent of thresholds)
 let _scDetections = [];      // current detections (depend on settings)
 let _scSnapshot = null;      // undo snapshot after apply
+let _scFocusId = null;       // highlighted detection (marker ⇄ list linking)
+let _scPreviewing = false;   // auto-reverting preview active
+// Manual overrides keyed by a detection's original position, so dragged edges
+// and keep/remove choices survive a threshold change (which re-runs the rules).
+let _scOverrides = {};
 
 const _SC_TYPE_COLORS = {
   PAUSE_VERY_LONG: '#ff4d6d', PAUSE_LONG: '#ff8c42', PAUSE_SHORT: '#ffd23f',
@@ -24487,13 +24515,25 @@ function recomputeSmartCut() {
 
   const push = (type, cutStart, cutEnd, conf, text, forceKeep) => {
     if(cutEnd - cutStart <= 0.02) return;
-    dets.push({
+    const d = {
       id: 'det_' + (idc++), type,
       startTime: +cutStart.toFixed(3), endTime: +cutEnd.toFixed(3),
       duration: +(cutEnd - cutStart).toFixed(3),
       confidence: conf, text: text || '',
       action: forceKeep ? 'keep' : (conf >= s.minConf ? 'remove' : 'keep')
-    });
+    };
+    // Stable key for this detection's ORIGINAL position, so manual edits
+    // (dragged edges / keep-remove toggles) survive threshold recomputes.
+    d.baseKey = type + '@' + d.startTime.toFixed(2);
+    const ov = _scOverrides[d.baseKey];
+    if(ov) {
+      if(ov.startTime != null) d.startTime = ov.startTime;
+      if(ov.endTime   != null) d.endTime   = ov.endTime;
+      d.duration = +(d.endTime - d.startTime).toFixed(3);
+      if(ov.action) d.action = ov.action;
+      if(ov.edited) d.edited = true;
+    }
+    dets.push(d);
   };
 
   // Pauses (cut = gap minus preserved lead) — but only if the gap is actually
@@ -24552,12 +24592,120 @@ function _scRenderTimelineMarkers() {
   track.innerHTML = _scDetections.map(d => {
     const col   = _SC_TYPE_COLORS[d.type] || '#888';
     const left  = (d.startTime / dur) * totalW;
-    const w     = Math.max(3, (d.duration / dur) * totalW);
-    const label = (_SC_TYPE_LABEL[d.type] || d.type) + ' ' + d.duration.toFixed(2) + 's (' + Math.round(d.confidence*100) + '%) — click to toggle';
-    return '<div class="tl-ai-marker ' + (d.action==='keep'?'keep':'') + '" ' +
+    const w     = Math.max(4, (d.duration / dur) * totalW);
+    const label = (_SC_TYPE_LABEL[d.type] || d.type) + ' ' + d.duration.toFixed(2) + 's (' +
+      Math.round(d.confidence*100) + '%)\nDrag edges to resize · double-click = show in list · right-click = keep/remove';
+    return '<div class="tl-ai-marker' + (d.action==='keep'?' keep':'') +
+      (d.id === _scFocusId ? ' focus' : '') + '" data-id="' + d.id + '" ' +
       'style="left:' + left + 'px;width:' + w + 'px;background:' + col + ';" ' +
-      'title="' + label + '" onclick="event.stopPropagation();_scToggle(\'' + d.id + '\')"></div>';
+      'title="' + label + '">' +
+        '<div class="tl-ai-handle l" data-side="start"></div>' +
+        '<div class="tl-ai-handle r" data-side="end"></div>' +
+      '</div>';
   }).join('');
+
+  // Wire interactions with real listeners (drag needs mousedown/move/up)
+  track.querySelectorAll('.tl-ai-marker').forEach(el => {
+    const id = el.dataset.id;
+    el.querySelectorAll('.tl-ai-handle').forEach(h => {
+      h.addEventListener('mousedown', ev => _scMarkerDragStart(ev, id, h.dataset.side));
+    });
+    // Single click → seek + select · Double click → reveal in the Detected list
+    el.addEventListener('click', ev => {
+      if(ev.detail > 1) return;                    // let dblclick win
+      ev.stopPropagation(); ev.preventDefault();
+      const d = _scDetections.find(x => x.id === id);
+      if(!d) return;
+      _scFocusId = id;
+      _scSeek(d.startTime);
+      renderSmartCutList(); _scRenderTimelineMarkers();
+    });
+    el.addEventListener('dblclick', ev => {
+      ev.stopPropagation(); ev.preventDefault();
+      _scRevealInList(id);
+    });
+    // Right-click → toggle keep/remove
+    el.addEventListener('contextmenu', ev => {
+      ev.stopPropagation(); ev.preventDefault();
+      _scToggle(id);
+    });
+  });
+}
+
+// ── Drag a detection's edge to extend/shrink the cut range ──
+function _scMarkerDragStart(ev, id, side) {
+  ev.stopPropagation(); ev.preventDefault();
+  const d = _scDetections.find(x => x.id === id);
+  if(!d) return;
+  const dur    = (typeof getTLDur === 'function') ? getTLDur() : 0;
+  const totalW = (typeof getTLTotalW === 'function') ? getTLTotalW() : 0;
+  if(!dur || !totalW) return;
+
+  const startX = ev.clientX;
+  const origStart = d.startTime, origEnd = d.endTime;
+  const MIN = 0.03;                                 // usable minimum length
+  let raf = null, pending = null;
+  document.body.style.cursor = 'ew-resize';
+  document.body.style.userSelect = 'none';
+
+  const apply = (clientX) => {
+    const dt = ((clientX - startX) / totalW) * dur;
+    if(side === 'start') d.startTime = Math.max(0, Math.min(origStart + dt, d.endTime - MIN));
+    else                 d.endTime   = Math.min(dur, Math.max(origEnd + dt, d.startTime + MIN));
+    d.startTime = +d.startTime.toFixed(3);
+    d.endTime   = +d.endTime.toFixed(3);
+    d.duration  = +(d.endTime - d.startTime).toFixed(3);
+    d.edited    = true;                             // user-adjusted
+    if(d.baseKey) {
+      _scOverrides[d.baseKey] = Object.assign({}, _scOverrides[d.baseKey], {
+        startTime: d.startTime, endTime: d.endTime, edited: true
+      });
+    }
+    _scFocusId  = id;
+    _scRenderTimelineMarkers();
+    renderSmartCutList();
+    updateSmartCutSummary();
+  };
+  const onMove = (e) => {
+    pending = e.clientX;
+    if(raf) return;
+    raf = requestAnimationFrame(() => { raf = null; if(pending != null) { apply(pending); pending = null; } });
+  };
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    if(raf) cancelAnimationFrame(raf);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    showToast('✎ ' + (_SC_TYPE_LABEL[d.type] || d.type) + ' → ' + d.duration.toFixed(2) + 's');
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+// ── Two-way linking: timeline marker ⇄ Detected list ──
+function _scRevealInList(id) {
+  _scFocusId = id;
+  renderSmartCutList();
+  _scRenderTimelineMarkers();
+  const pane = document.getElementById('ccpane-smartcut');
+  const tab  = document.getElementById('cctab-smartcut');
+  if(pane && tab && typeof ccSwitch === 'function' && !pane.classList.contains('active')) {
+    ccSwitch('smartcut', tab);
+  }
+  requestAnimationFrame(() => {
+    const row = document.querySelector('.sc-det[data-id="' + id + '"]');
+    if(row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function _scRevealOnTimeline(id) {
+  const d = _scDetections.find(x => x.id === id);
+  if(!d) return;
+  _scFocusId = id;
+  _scSeek(d.startTime);          // seeks AND scrolls the timeline into view
+  renderSmartCutList();
+  _scRenderTimelineMarkers();
 }
 
 function renderSmartCut() {
@@ -24620,7 +24768,11 @@ function renderSmartCutList() {
     const col = _SC_TYPE_COLORS[d.type] || '#888';
     const label = _SC_TYPE_LABEL[d.type] || d.type;
     const info = (d.text ? '"' + d.text + '" · ' : '') + d.duration.toFixed(2) + 's · ' + fmt(d.startTime) + ' · ' + Math.round(d.confidence*100) + '%';
-    return '<div class="sc-det ' + (d.action==='keep'?'keep':'') + '" onclick="_scSeek(' + d.startTime + ')">' +
+    return '<div class="sc-det' + (d.action==='keep'?' keep':'') + (d.id===_scFocusId?' focus':'') +
+      '" data-id="' + d.id + '"' +
+      ' onclick="_scRevealOnTimeline(\'' + d.id + '\')"' +
+      ' ondblclick="_scRevealOnTimeline(\'' + d.id + '\')"' +
+      ' title="Click = jump to it on the timeline">' +
       '<span class="sc-det-type" style="background:' + col + '22;color:' + col + ';border:1px solid ' + col + '55;">' + label + '</span>' +
       '<span class="sc-det-info">' + info + '</span>' +
       '<span class="sc-det-toggle" onclick="event.stopPropagation();_scToggle(\'' + d.id + '\')">' + (d.action==='remove'?'✂ Remove':'Keep') + '</span>' +
@@ -24632,6 +24784,10 @@ function _scToggle(id) {
   const d = _scDetections.find(x => x.id === id);
   if(!d) return;
   d.action = d.action === 'remove' ? 'keep' : 'remove';
+  // Remember the choice so a threshold change doesn't undo it
+  if(d.baseKey) {
+    _scOverrides[d.baseKey] = Object.assign({}, _scOverrides[d.baseKey], { action: d.action });
+  }
   renderSmartCutList();
   updateSmartCutSummary();
   _scRenderTimelineMarkers();
@@ -24771,12 +24927,16 @@ function applySmartCut() {
 
   const removedTotal = removeRanges.reduce((s, r) => s + (r[1]-r[0]), 0);
   // Detections are now stale (timeline changed) — clear so markers hide and a
-  // fresh analysis runs next time the tab is opened.
-  _scAnalysis = null; _scDetections = [];
+  // fresh analysis runs next time the tab is opened. Manual overrides refer to
+  // pre-cut positions, so drop them too — EXCEPT during a preview, which reverts
+  // and should bring the user's tweaks back.
+  _scAnalysis = null; _scDetections = []; _scFocusId = null;
+  if(!_scPreviewing) _scOverrides = {};
   if(typeof _scRenderTimelineMarkers === 'function') _scRenderTimelineMarkers();
   showToast('✂ Smart Cut applied — removed ' + fmt(removedTotal) + ' · use Undo to revert');
   const undoBtn = document.getElementById('scUndoBtn'); if(undoBtn) undoBtn.style.display = '';
-  if(typeof _autosaveLastProject === 'function') _autosaveLastProject();   // remember the cut state
+  // Don't persist a temporary preview cut as the resumable project state
+  if(!_scPreviewing && typeof _autosaveLastProject === 'function') _autosaveLastProject();
 }
 
 function undoSmartCut() {
@@ -24796,6 +24956,54 @@ function undoSmartCut() {
   if(typeof refreshCaptionList === 'function') refreshCaptionList();
   const undoBtn = document.getElementById('scUndoBtn'); if(undoBtn) undoBtn.style.display = 'none';
   showToast('↩ Smart Cut reverted');
+}
+
+// ── PREVIEW SMART CUT (spec §18) ──
+// Applies the cuts temporarily, plays the result, and auto-reverts when playback
+// ends or the user stops it. The project is never left in the cut state.
+function previewSmartCut() {
+  if(_scPreviewing) { stopSmartCutPreview(); return; }
+  if(!masterWords || !masterWords.length) { showToast('⚠️ Generate captions first'); return; }
+  if(!_scMergedRemoveRanges().length) { showToast('✓ Nothing marked for removal'); return; }
+
+  const before = _scMediaDur();
+  _scPreviewing = true;                 // suppresses autosave inside applySmartCut
+  applySmartCut();
+  if(!_scSnapshot) { _scPreviewing = false; return; }   // apply bailed out
+
+  const after = (typeof getContentDur === 'function') ? getContentDur() : before;
+  _scSetPreviewBtn(true);
+
+  // Play from the start of the cut result
+  window._virtualT = 0;
+  if(audio) {
+    try { audio.currentTime = (window._mediaEffectiveStart || 0); } catch(_) {}
+    if(typeof onTimeUpdate === 'function') onTimeUpdate();
+    if(audio.paused && typeof togglePlay === 'function') togglePlay();
+    // Auto-revert when the preview finishes
+    const onEnd = () => { audio.removeEventListener('ended', onEnd); if(_scPreviewing) stopSmartCutPreview(); };
+    audio.addEventListener('ended', onEnd);
+  }
+  showToast('▶ Preview — ' + fmt(before) + ' → ' + fmt(after) + ' · press Stop to revert');
+}
+
+function stopSmartCutPreview() {
+  if(!_scPreviewing) return;
+  try { if(audio && !audio.paused) audio.pause(); } catch(_) {}
+  window._isAudioPaused = true;
+  const btn = document.getElementById('playBtn'); if(btn) btn.innerHTML = '▶';
+  _scPreviewing = false;
+  undoSmartCut();                        // revert to the uncut project
+  _scSetPreviewBtn(false);
+  if(typeof renderSmartCut === 'function') renderSmartCut();   // re-analyze
+  showToast('⏹ Preview ended — project reverted');
+}
+
+function _scSetPreviewBtn(active) {
+  const b = document.getElementById('scPreviewBtn');
+  if(!b) return;
+  b.textContent = active ? '⏹ Stop Preview' : '▶ Preview Smart Cut';
+  b.classList.toggle('sc-btn-primary', !!active);
 }
 
 // ── Export the current timeline as FCPXML for Premiere Pro ──
@@ -25574,6 +25782,8 @@ function _clearWorkingState() {
   audioClips = []; projectFiles = []; wordGroups = []; masterWords = []; words = [];
   if(typeof clipCaptionGroups !== 'undefined') Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
   window._fileWaveforms = {}; if(typeof waveformData !== 'undefined') waveformData = null;
+  // Smart Cut state belongs to the old footage
+  if(typeof _scAnalysis !== 'undefined') { _scAnalysis = null; _scDetections = []; _scOverrides = {}; _scFocusId = null; }
   // Own canvas per sequence: reassign (prior sequence's snapshot keeps its array).
   if(typeof projects !== 'undefined') projects = [];
   if(typeof activeProjectId !== 'undefined') activeProjectId = null;
