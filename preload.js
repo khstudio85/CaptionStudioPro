@@ -22,6 +22,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Read ground-truth source video metadata (resolution/fps/codec/bitrate/audio)
   probeVideo: (filePath) => ipcRenderer.invoke('probe-video', filePath),
+
+  // Native per-file waveform peaks (works for any file size)
+  getWaveformPeaks: (options) => ipcRenderer.invoke('extract-waveform', options),
+
+  // Last-project auto-save / one-click resume
+  saveLastProject: (jsonStr) => ipcRenderer.invoke('save-last-project', jsonStr),
+  loadLastProject: () => ipcRenderer.invoke('load-last-project'),
   
   // NEW: Frame-based export (CapCut style)
   exportFramesMode: (options) => ipcRenderer.invoke('export-frames-mode', options),

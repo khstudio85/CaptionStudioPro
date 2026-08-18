@@ -147,6 +147,75 @@ ipcMain.handle('probe-video', async (event, filePath) => {
   });
 });
 
+// ═══════════════════════════════════════════
+// LAST PROJECT (auto-save / one-click resume)
+// Stored in the app's userData folder so it survives restarts and has no size
+// limit (unlike localStorage). Media itself stays in place — we save the paths.
+// ═══════════════════════════════════════════
+function _lastProjectPath() { return path.join(app.getPath('userData'), 'last-project.json'); }
+
+ipcMain.handle('save-last-project', async (event, jsonStr) => {
+  try { fs.writeFileSync(_lastProjectPath(), jsonStr, 'utf8'); return { success: true }; }
+  catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('load-last-project', async () => {
+  try {
+    const p = _lastProjectPath();
+    if(!fs.existsSync(p)) return { success: false, error: 'none' };
+    return { success: true, data: fs.readFileSync(p, 'utf8') };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// ═══════════════════════════════════════════
+// WAVEFORM PEAKS (native, any file size)
+// Extracts mono PCM via FFmpeg and returns a normalized peak array so the
+// timeline can show a per-file waveform even for very large videos that the
+// browser can't decode. Each file gets its OWN peaks (no cross-clip reuse).
+// ═══════════════════════════════════════════
+ipcMain.handle('extract-waveform', async (event, options) => {
+  const { videoPath } = options || {};
+  if(!videoPath) return { success: false, error: 'No file path' };
+  const SR = 8000;
+  const outPath = path.join(app.getPath('temp'), 'wf_' + Date.now() + '.pcm');
+
+  return new Promise((resolve) => {
+    ffmpeg(videoPath)
+      .noVideo()
+      .audioChannels(1)
+      .audioFrequency(SR)
+      .format('s16le')
+      .on('error', (err) => { try { fs.unlinkSync(outPath); } catch(_) {} resolve({ success: false, error: err.message }); })
+      .on('end', () => {
+        try {
+          const buf = fs.readFileSync(outPath);
+          try { fs.unlinkSync(outPath); } catch(_) {}
+          const samples = Math.floor(buf.length / 2);
+          if(samples <= 0) { resolve({ success: false, error: 'No audio track' }); return; }
+          const int16 = new Int16Array(buf.buffer, buf.byteOffset, samples);
+          const durSec = samples / SR;
+          const B = Math.min(240000, Math.max(4000, Math.round(durSec * 500)));  // ~500 buckets/sec
+          const peaks = new Float32Array(B);
+          const bucket = Math.max(1, Math.floor(samples / B));
+          for(let i = 0; i < B; i++) {
+            const s0 = i * bucket, s1 = Math.min(samples, s0 + bucket);
+            let mx = 0;
+            for(let j = s0; j < s1; j++) { const v = int16[j] < 0 ? -int16[j] : int16[j]; if(v > mx) mx = v; }
+            peaks[i] = mx / 32768;
+          }
+          // Normalize to ~98th percentile so quiet files still show
+          const sorted = Float32Array.from(peaks).sort();
+          const ref = sorted[Math.floor(sorted.length * 0.98)] || 0.001;
+          for(let i = 0; i < B; i++) peaks[i] = Math.min(1, peaks[i] / ref);
+          resolve({ success: true, peaks: Array.from(peaks) });
+        } catch(e) {
+          resolve({ success: false, error: e.message });
+        }
+      })
+      .save(outPath);
+  });
+});
+
 ipcMain.handle('extract-audio-region', async (event, options) => {
   const { videoPath, startTime, endTime } = options;
   const outputPath = path.join(app.getPath('temp'), 'audio_' + Date.now() + '.wav');

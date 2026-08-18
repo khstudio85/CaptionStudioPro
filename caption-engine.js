@@ -374,11 +374,13 @@
     styleBorderPopUp(spec, group, currentTime) {
       const activeIdx = this.getActiveWordIndex(group, currentTime);
       const props = spec.styleProps[7] || {};
-      const bounceScale = (props.bounceScale || 118) / 100;
+      // Defaults match the inline preview's subtle Border Pop Up (bar 100%,
+      // gentle 104% bounce) so export and preview agree.
+      const bounceScale = (props.bounceScale || 104) / 100;
       const padH = props.padH || 8;
       const padV = props.padV || 5;
       const radius = props.barRadius || 7;
-      const bgOp = (props.bgOpacity || 88) / 100;
+      const bgOp = (props.bgOpacity != null ? props.bgOpacity : 100) / 100;
       // DOM keeps the active word scaled at hlScale (not 1.0) for the whole
       // active duration, with the bar popping to bounceScale. Match that: the
       // active word settles to hlScale and peaks at bounceScale.

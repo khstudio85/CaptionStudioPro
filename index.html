@@ -1,4 +1,4 @@
-+<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ur">
 <head>
 <meta charset="UTF-8">
@@ -37,13 +37,16 @@
   -webkit-user-select: none;
 }
 
+html { height: 100%; }
 body {
   font-family: var(--font);
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
-  overflow-x: hidden;
-  cursor: default;  
+  height: 100vh;
+  overflow: hidden;          /* lock the app to the window — no whole-page scroll */
+  display: flex;
+  flex-direction: column;    /* topbar (natural height) + .main (fills the rest) */
+  cursor: default;
 }
 
 /* ─── EXPORT DROPDOWN ─── */
@@ -318,6 +321,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
+  flex-shrink: 0;   /* keep natural height; .main fills the remaining space */
 }
 .logo {
   font-family: 'Bebas Neue', sans-serif;
@@ -778,7 +782,8 @@ body {
 .main {
   display: flex;
   flex-direction: row;
-  height: calc(100vh - 49px);
+  flex: 1 1 auto;      /* fill the space under the topbar exactly (any topbar height) */
+  min-height: 0;       /* allow inner flex children to scroll instead of growing body */
   overflow: hidden;
   position: relative;
 }
@@ -1218,7 +1223,8 @@ body.marquee-active #timelineScroll * { cursor: crosshair !important; }
 body.hand-tool-active #timelineScroll { cursor: grab !important; }
 body.hand-tool-active #timelineScroll:active { cursor: grabbing !important; }
 body.hand-tool-active #timelineScroll .tl-group-block,
-body.hand-tool-active #timelineScroll .tl-audio-clip { cursor: grab !important; pointer-events: none; }
+body.hand-tool-active #timelineScroll .tl-audio-clip,
+body.hand-tool-active #timelineScroll .tl-audio-clip * { cursor: grab !important; pointer-events: none !important; }
 body.hand-tool-active #timelineScroll .tl-ruler { cursor: grab !important; }
 body.razor-tool-active #tlAudioTrack { cursor: crosshair !important; }
 body.razor-tool-active #timelineScroll .tl-ruler { cursor: crosshair !important; }
@@ -5421,6 +5427,9 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
     <button class="tb-btn" onclick="document.getElementById('openProjectFile').click()" title="Open Project (.csp)" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
       📂 Open
     </button>
+    <button class="tb-btn" onclick="openLastProject()" title="Resume your last project in one click" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
+      ⏮ Open Last
+    </button>
     <input type="file" id="openProjectFile" accept=".csp,.json" style="display:none" onchange="loadProject(this)">
   </div>
 
@@ -5450,9 +5459,17 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
           <span class="ei-icon">📄</span>
           <div><div class="ei-title">.SRT File</div><div class="ei-sub">Any video editor — universal</div></div>
         </div>
-        <div class="export-item" onclick="exportPremiereXML()">
+        <div class="export-item" onclick="exportBilingualSRT()">
+          <span class="ei-icon">🌐</span>
+          <div><div class="ei-title">Bilingual .SRT (2 languages)</div><div class="ei-sub">Original + translated — both caption tracks in Premiere</div></div>
+        </div>
+        <div class="export-item" onclick="exportFCP7XML()">
           <span class="ei-icon">🎬</span>
-          <div><div class="ei-title">Premiere Pro XML</div><div class="ei-sub">Direct timeline captions with timing</div></div>
+          <div><div class="ei-title">Premiere XML (Final Cut Pro XML)</div><div class="ei-sub">Import cut timeline — File → Import</div></div>
+        </div>
+        <div class="export-item" onclick="exportEDL()">
+          <span class="ei-icon">📼</span>
+          <div><div class="ei-title">EDL (.edl)</div><div class="ei-sub">Universal edit list — relink media once</div></div>
         </div>
         <div class="export-item" onclick="exportAEScript('bounce')">
           <span class="ei-icon">✨</span>
@@ -7175,9 +7192,11 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
         <button class="sc-btn sc-btn-primary" id="scApplyBtn" onclick="applySmartCut()">✂ Apply Smart Cut</button>
         <button class="sc-btn" id="scUndoBtn" onclick="undoSmartCut()" style="display:none;">↩ Undo</button>
       </div>
-      <div style="padding:0 14px 12px;">
-        <button class="sc-btn" style="width:100%;" onclick="exportPremiereXML()" title="Export the current timeline as FCPXML — import into Premiere Pro to fine-tune, trim & extend clips">🎬 Export to Premiere (XML)</button>
+      <div style="display:flex;gap:8px;padding:0 14px 4px;">
+        <button class="sc-btn" style="flex:1;" onclick="exportFCP7XML()" title="Final Cut Pro 7 XML — Premiere: File → Import → 'Final Cut Pro XML'. Auto-links media; trim/extend clips.">🎬 Premiere XML</button>
+        <button class="sc-btn" style="flex:1;" onclick="exportEDL()" title="EDL — universal; every Premiere imports it. Relink media once.">📼 EDL</button>
       </div>
+      <div style="padding:0 14px 12px;font-size:10px;color:var(--text3);">Premiere doesn't import .fcpxml — use these.</div>
 
       <!-- Detection list -->
       <div style="padding:0 14px 4px;font-size:11px;font-weight:800;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;">Detected</div>
@@ -7933,6 +7952,10 @@ async function loadAudioFile(file) {
   audio.addEventListener('ended', () => {
     console.log('[Video] Ended event fired');
 
+    // The tick-based auto-transition (in _multiClipTick) usually fires ~1 frame
+    // before the native end. If it's mid-transition, don't start a second one.
+    if(window._clipTransitioning) return;
+
     // ── MULTI-CLIP: Force transition to next clip ──
     if(audioClips.length > 1) {
       const sorted = [...audioClips].sort((a,b) => a.timelineStart - b.timelineStart);
@@ -7951,18 +7974,25 @@ async function loadAudioFile(file) {
           const mainVid = document.getElementById('previewVideoEl');
 
           if(nextPf && mainVid) {
+            window._clipTransitioning = true;
             mainVid.pause();
-            mainVid.src = nextPf.url;
             mainVid.dataset.activeSrc = nextPf.url;
+            mainVid.src = nextPf.url;
 
-            const onLoaded = () => {
-              mainVid.currentTime = nextClip.trimIn || 0;
+            const go = () => {
+              mainVid.removeEventListener('canplay', go);
+              clearTimeout(mainVid._transTimer);
+              try { mainVid.currentTime = nextClip.trimIn || 0; } catch(_) {}
               window._virtualT = nextClip.timelineStart;
               mainVid.play().catch(err => console.warn('Play failed:', err));
               _forcePlayheadUpdate();
-              mainVid.removeEventListener('loadedmetadata', onLoaded);
+              if(_mcTickRaf) cancelAnimationFrame(_mcTickRaf);
+              _mcTickRaf = requestAnimationFrame(_multiClipTick);   // resume the tick
+              window._clipTransitioning = false;
             };
-            mainVid.addEventListener('loadedmetadata', onLoaded);
+            mainVid.addEventListener('canplay', go);
+            mainVid._transTimer = setTimeout(go, 1500);
+            mainVid.load();
           }
           return;
         }
@@ -8140,21 +8170,28 @@ function togglePlay() {
     const effEnd   = window._mediaEffectiveEnd;
 
     // ── FIX C: If virtualT is in empty space, jump to clip start ──
+    // NOTE: audio.currentTime is SOURCE time, while clip.timelineStart is
+    // TIMELINE time. They must be converted: source = effStart + timelineT.
+    // Assigning the raw timeline value here is what made a TRIMMED clip dragged
+    // to the timeline start play from the beginning of the original footage.
     const vt = window._virtualT || 0;
+    // Lowest playable source time for the clip (== its trim-in point)
+    let srcLow = effStart;
     if(audioClips.length === 1) {
       const clip = audioClips[0];
+      srcLow = effStart + (clip.timelineStart || 0);
       if(vt < clip.timelineStart) {
         window._virtualT = clip.timelineStart;
-        audio.currentTime = clip.timelineStart;
+        audio.currentTime = srcLow;
         showToast('⏭️ Playing from ' + fmt(clip.timelineStart));
       } else if(vt >= clip.timelineEnd) {
         window._virtualT = clip.timelineStart;
-        audio.currentTime = clip.timelineStart;
+        audio.currentTime = srcLow;
       }
     }
 
-    if(effEnd != null && audio.currentTime >= effEnd - 0.05) audio.currentTime = effStart;
-    if(audio.currentTime < effStart) audio.currentTime = effStart;
+    if(effEnd != null && audio.currentTime >= effEnd - 0.05) audio.currentTime = srcLow;
+    if(audio.currentTime < srcLow) audio.currentTime = srcLow;
     window._isAudioPaused = false;
     audio.play().catch(e => showToast('⚠️ Play error: ' + e.message));
     if(btn) { btn.innerHTML = '⏸'; btn.style.boxShadow = '0 0 26px rgba(108,71,255,0.8), 0 2px 8px rgba(0,0,0,0.4)'; }
@@ -8221,7 +8258,7 @@ function _forcePlayheadUpdate() {
       virtualT = activeClip.timelineStart + clipInternalTime;
 
       // ── AUTO-TRANSITION: If we passed clip end, jump to next ──
-      if(virtualT >= activeClip.timelineEnd - 0.03) {
+      if(virtualT >= activeClip.timelineEnd - 0.03 && !window._clipTransitioning) {
         const activeIdx = sorted.indexOf(activeClip);
         const nextClip = sorted[activeIdx + 1];
         if(nextClip) {
@@ -8230,18 +8267,28 @@ function _forcePlayheadUpdate() {
           const nextPf = projectFiles.find(f => f.id === nextClip.fileId);
           if(nextPf && mainVid) {
             const wasPlaying = !audio.paused;
-            if(mainVid.src !== nextPf.url) {
+            if(mainVid.src !== nextPf.url && mainVid.dataset.activeSrc !== nextPf.url) {
+              // Different file — swap source, then seek + play once it can play.
+              // Guarded so the video's native 'ended' handler doesn't also fire
+              // a competing transition (which stalled playback at the clip edge).
+              window._clipTransitioning = true;
               mainVid.pause();
-              mainVid.src = nextPf.url;
               mainVid.dataset.activeSrc = nextPf.url;
-              const onLoaded = () => {
-                mainVid.currentTime = nextClip.trimIn || 0;
+              mainVid.src = nextPf.url;
+              const go = () => {
+                mainVid.removeEventListener('canplay', go);
+                clearTimeout(mainVid._transTimer);
+                try { mainVid.currentTime = nextClip.trimIn || 0; } catch(_) {}
+                window._virtualT = nextClip.timelineStart;
                 if(wasPlaying) mainVid.play().catch(()=>{});
-                mainVid.removeEventListener('loadedmetadata', onLoaded);
+                window._clipTransitioning = false;
               };
-              mainVid.addEventListener('loadedmetadata', onLoaded);
+              mainVid.addEventListener('canplay', go);
+              mainVid._transTimer = setTimeout(go, 1500);   // fallback if canplay is slow
+              mainVid.load();
             } else {
-              mainVid.currentTime = nextClip.trimIn || 0;
+              // Same file, next segment — just seek forward.
+              try { mainVid.currentTime = nextClip.trimIn || 0; } catch(_) {}
               if(wasPlaying && mainVid.paused) mainVid.play().catch(()=>{});
             }
             virtualT = nextClip.timelineStart;
@@ -8273,7 +8320,7 @@ function _forcePlayheadUpdate() {
 
   // Update time label
   const tlTime = document.getElementById('tlPlayheadTime');
-  if(tlTime) tlTime.textContent = fmt(virtualT);
+  if(tlTime) tlTime.textContent = fmtTC(virtualT);
 
   // Update height
   const timelineInner = document.getElementById('timelineInner');
@@ -8380,7 +8427,7 @@ function startSync() {
         
         // Time label
         const tlTime = document.getElementById('tlPlayheadTime');
-        if(tlTime && typeof fmt === 'function') tlTime.textContent = fmt(window._virtualT);
+        if(tlTime && typeof fmtTC === 'function') tlTime.textContent = fmtTC(window._virtualT);
       }
     }
     
@@ -8423,9 +8470,14 @@ function onTimeUpdate() {
     }
     if(!audio.paused && selectedClipId) {
       const activeClip = audioClips.find(c => c.id === selectedClipId);
-      if(activeClip && activeClip._trimmedRight && rawT >= activeClip.timelineEnd - 0.02) {
+      // Compare in SOURCE time: source = effStart + timelineT (was comparing raw
+      // source time against a timeline value, which mis-stopped trimmed clips).
+      const _srcEnd = activeClip
+        ? (window._mediaEffectiveStart || 0) + activeClip.timelineEnd
+        : null;
+      if(activeClip && activeClip._trimmedRight && _srcEnd != null && rawT >= _srcEnd - 0.02) {
         audio.pause();
-        audio.currentTime = activeClip.timelineEnd;
+        audio.currentTime = _srcEnd;
         window._isAudioPaused = true;
         const btn2 = document.getElementById('playBtn');
         if(btn2) { btn2.innerHTML = '▶'; btn2.style.boxShadow = '0 0 16px rgba(108,71,255,0.5), 0 2px 8px rgba(0,0,0,0.4)'; }
@@ -9085,7 +9137,7 @@ function updateTLPlayhead(t, _durIgnored) {
 
   // Update time label
   const tlTime = document.getElementById('tlPlayheadTime');
-  if(tlTime) tlTime.textContent = fmt(virtualT);
+  if(tlTime) tlTime.textContent = fmtTC(virtualT);
 
   // Auto-scroll: keep playhead visible while playing
   if(audio && !audio.paused) {
@@ -9467,8 +9519,29 @@ document.addEventListener('DOMContentLoaded', () => {
         elx.style.borderColor = 'rgba(0,229,160,0.65)';
         elx.style.boxShadow = 'none';
       });
+      if(typeof _updateEditBtnStates === 'function') _updateEditBtnStates();
+      return;
     }
-    // Otherwise selection stays (already applied during pointermove)
+
+    // ── Real marquee drag: FINALIZE the selection ──
+    // The clip highlight was applied during pointermove, but nothing told the
+    // rest of the app — so Del Clip / Split stayed disabled and it looked like
+    // marquee selection "didn't work". Sync the button states + selection here.
+    if(selectedClipIds && selectedClipIds.size > 0) {
+      // Clip selection is exclusive from caption-layer selection, otherwise the
+      // Delete key bails out (it skips when caption layers are selected).
+      if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.size) {
+        selectedLayerIds.clear();
+        if(typeof updateLayerSelectionUI === 'function') updateLayerSelectionUI();
+      }
+      if(typeof updateClipSelectionUI === 'function') updateClipSelectionUI();
+      if(typeof updateAutoCapBtnState === 'function') updateAutoCapBtnState();
+      if(typeof _updateEditBtnStates === 'function') _updateEditBtnStates();
+      showToast('▣ ' + selectedClipIds.size + ' clip' + (selectedClipIds.size > 1 ? 's' : '') + ' selected');
+    } else if(selectedLayerIds && selectedLayerIds.size > 0) {
+      if(typeof updateLayerSelectionUI === 'function') updateLayerSelectionUI();
+      if(typeof _updateEditBtnStates === 'function') _updateEditBtnStates();
+    }
   });
 
   scroll.addEventListener('pointercancel', function() {
@@ -9727,6 +9800,29 @@ function fmt(s) {
   if(isNaN(s)) return '0:00';
   const m = Math.floor(s / 60), sec = Math.floor(s % 60);
   return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+// Project frame rate (for frame-accurate timecode).
+function _projFps() {
+  try {
+    const proj = (typeof projects !== 'undefined') ? projects.find(p => p.id === activeProjectId) : null;
+    if(proj && proj.fps) return proj.fps;
+    const clip = (typeof audioClips !== 'undefined' && audioClips[0]) ? audioClips[0] : null;
+    const pf = clip ? projectFiles.find(f => f.id === clip.fileId) : null;
+    if(pf && pf.meta && pf.meta.fps) return pf.meta.fps;
+  } catch(_) {}
+  return 30;
+}
+
+// Frame-accurate timecode HH:MM:SS:FF (like Premiere).
+function fmtTC(s) {
+  s = Math.max(0, s || 0);
+  const fps = Math.max(1, Math.round(_projFps()));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  let f = Math.floor((s - Math.floor(s)) * fps);
+  if(f >= fps) f = fps - 1;
+  const p2 = n => String(n).padStart(2, '0');
+  return p2(h) + ':' + p2(m) + ':' + p2(sec) + ':' + p2(f);
 }
 function updateTimeLabel() {
   if(!audio) return;
@@ -10857,10 +10953,14 @@ const _STYLE8_FONTS = [
 ];
 
 // Size patterns for typographic variety
+// Multipliers on the base font size. Kept at/below ~1× on 'low' so Pro
+// Typographic renders at the SAME size as other styles by default; medium/high
+// are toned down too (high used to reach 3× base, which looked like the font
+// size had changed when switching animation styles).
 const _STYLE8_SIZE_PATTERNS = {
-  low:    [1.0, 1.1, 0.9, 1.1],
-  medium: [1.5, 0.8, 1.8, 1.2],
-  high:   [2.5, 0.8, 3.0, 1.3, 2.0, 0.9],
+  low:    [1.0, 1.05, 0.95, 1.0],
+  medium: [1.15, 0.9, 1.25, 1.0],
+  high:   [1.5, 0.85, 1.7, 1.1, 1.35, 0.9],
 };
 
 // Store per-group font/size/color assignments so they don't change on re-render
@@ -10880,17 +10980,21 @@ function _getStyle8Assignment(groupIdx, wordCount, props) {
   };
   
   for(let i = 0; i < wordCount; i++) {
-    // Font
+    // Font — when randomisation is OFF, inherit the user's chosen font ('' means
+    // "don't override"). It used to force Anton, ignoring the font you picked.
     if(props.randomFonts) {
       assignment.fonts.push(_STYLE8_FONTS[Math.floor(Math.random() * _STYLE8_FONTS.length)]);
     } else {
-      assignment.fonts.push(_STYLE8_FONTS[0]);
+      assignment.fonts.push('');
     }
-    
-    // Size (from pattern with slight randomness)
+
+    // Size (from pattern). Jitter only when size variation is medium/high — the
+    // old unconditional ±10% made word sizes/positions shift on every render.
     const baseSize = sizePattern[i % sizePattern.length];
-    const variation = 0.9 + Math.random() * 0.2;
-    assignment.sizes.push(baseSize * variation);
+    const jitter = (props.sizeVariation === 'low' || !props.sizeVariation)
+      ? 1
+      : (0.96 + Math.random() * 0.08);
+    assignment.sizes.push(baseSize * jitter);
     
     // Color
     if(props.randomColors) {
@@ -10944,22 +11048,23 @@ function renderStyle8(disp, group, idx, activeWordIdx, s, baseStyle) {
       const delay = i * wordDelay;
       const finalSize = (baseSize * size).toFixed(1);
       
-      // Small stagger for indent effect (each word slightly indented)
-      const indent = (i % 3) * 20; // 0, 20, 40, 0, 20, 40...
-      
-      html += `<span class="s8-word" 
+      // Words now flow naturally (no erratic 0/20/40px indent pattern, which made
+      // word positions jump around). Only emit font-family when overriding, so
+      // '' inherits the user's chosen caption font.
+      const fontCss = font ? `font-family: ${font};` : '';
+
+      html += `<span class="s8-word"
         style="
           display: inline-block;
-          font-family: ${font};
+          ${fontCss}
           font-size: ${finalSize}px;
           color: ${color};
           font-weight: 900;
-          margin-left: ${indent}px;
           line-height: 1;
           padding: 2px 0;
           opacity: 0;
           text-shadow: 2px 2px 8px rgba(0,0,0,0.5);
-          animation: s8_${animType} ${animDuration}ms cubic-bezier(0.34, 1.56, 0.64, 1) ${delay}ms forwards;
+          animation: s8_${animType} ${animDuration}ms cubic-bezier(0.22, 1, 0.36, 1) ${delay}ms forwards;
         "
         data-i="${i}"
         data-gi="${idx}"
@@ -12018,16 +12123,37 @@ let waveformData = null;
 window._fileWaveforms = {}; // { fileId: Float32Array }
 
 async function _extractWaveformForFile(file, fileId) {
+  // ── Prefer NATIVE FFmpeg extraction ── each file gets its OWN peaks keyed by
+  // its fileId. This works for any size (no browser memory limits) and fixes the
+  // bug where clip 2 showed clip 1's waveform (shared fallback).
   try {
-    // Skip browser decode for very large files — reading multi-GB into memory
-    // throws NotReadableError and can crash the tab. Waveform is cosmetic.
+    const pf = projectFiles.find(f => f.id === fileId);
+    let nativePath = pf && pf.path;
+    if(!nativePath && window.electronAPI && window.electronAPI.getFilePath && file) {
+      try { nativePath = window.electronAPI.getFilePath(file); } catch(_) {}
+    }
+    if(nativePath && window.electronAPI && window.electronAPI.getWaveformPeaks) {
+      const res = await window.electronAPI.getWaveformPeaks({ videoPath: nativePath });
+      if(res && res.success && res.peaks && res.peaks.length) {
+        window._fileWaveforms[fileId] = Float32Array.from(res.peaks);
+        console.log('[Waveform] Native peaks for file ' + fileId + ': ' + res.peaks.length);
+        if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+        return;
+      }
+      console.warn('[Waveform] Native extract failed for ' + fileId + ':', res && res.error);
+    }
+  } catch(e) { console.warn('[Waveform] Native extract error:', e && e.message); }
+
+  try {
+    // Browser fallback (non-Electron / no native path). Skip very large files —
+    // reading multi-GB into memory throws NotReadableError and can crash the tab.
     const fileMB = (file.size || 0) / 1048576;
     if(fileMB > 500) {
       console.warn('[Waveform] Skipped for file ' + fileId + ' — too large (' + fileMB.toFixed(0) + 'MB) to decode in browser');
       window._fileWaveforms[fileId] = null;
       return;
     }
-    console.log('[Waveform] Extracting for file ' + fileId + ': ' + file.name);
+    console.log('[Waveform] Extracting (browser) for file ' + fileId + ': ' + file.name);
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const ab = await file.arrayBuffer();
     const decoded = await ctx.decodeAudioData(ab);
@@ -12040,7 +12166,10 @@ async function _extractWaveformForFile(file, fileId) {
       for(let i = 0; i < len; i++) mixed[i] += chData[i] / numCh;
     }
 
-    const BARS = 4000;
+    // Resolution scales with duration (~500 samples/sec) so the waveform stays
+    // detailed when fully zoomed in instead of turning into solid blocks.
+    // Capped so very long files don't use excessive memory.
+    const BARS = Math.min(240000, Math.max(4000, Math.round((decoded.duration || 1) * 500)));
     const step = Math.max(1, Math.floor(len / BARS));
     const data = new Float32Array(BARS);
     for(let i = 0; i < BARS; i++) {
@@ -12082,7 +12211,10 @@ async function extractWaveform(audioFile) {
     }
 
     // High-resolution RMS — 4000 bars for 50x zoom detail
-    const BARS = 4000;
+    // Resolution scales with duration (~500 samples/sec) so the waveform stays
+    // detailed when fully zoomed in instead of turning into solid blocks.
+    // Capped so very long files don't use excessive memory.
+    const BARS = Math.min(240000, Math.max(4000, Math.round((decoded.duration || 1) * 500)));
     const step = Math.max(1, Math.floor(len / BARS));
     const data = new Float32Array(BARS);
 
@@ -12256,11 +12388,11 @@ function applyZoom(newZoom) {
   let   screenX   = pxOld - scroll.scrollLeft;      // playhead offset inside viewport
   const wasVisible = screenX >= 0 && screenX <= viewW;
 
-  tlZoom = Math.max(0.2, Math.min(50, newZoom));
+  tlZoom = Math.max(0.2, Math.min(300, newZoom));   // allow deep frame-level zoom
 
   const slider = document.getElementById('zoomSlider');
   const label  = document.getElementById('zoomLabel');
-  if(slider) slider.value = zoomToSlider(tlZoom);
+  if(slider) slider.value = Math.min(200, zoomToSlider(tlZoom));
   if(label)  label.textContent = tlZoom < 10 ? tlZoom.toFixed(1)+'x' : Math.round(tlZoom)+'x';
 
   buildTimeline();
@@ -12285,7 +12417,8 @@ function zoomToLevel(sliderVal) {
 
 function zoomTL(dir) {
   // Finer steps at low zoom so 0.2x–0.5x range feels smooth
-  const step = tlZoom < 0.5 ? 0.05 : tlZoom < 2 ? 0.25 : tlZoom < 5 ? 0.5 : tlZoom < 15 ? 1 : 3;
+  const step = tlZoom < 0.5 ? 0.05 : tlZoom < 2 ? 0.25 : tlZoom < 5 ? 0.5
+             : tlZoom < 15 ? 1 : tlZoom < 50 ? 3 : tlZoom < 120 ? 10 : 25;
   applyZoom(tlZoom + dir * step);
 }
 
@@ -12730,34 +12863,41 @@ const animStyleProps = {
   4: { slideFrom:'bottom', inDuration:200, fadeOpacity:20, maxWords:4 },
   5: { dimOpacity:20, spokenOpacity:75, activeColor:'', glowColor:'', glowSize:8 },
   6: {
-    line1Dur:     550,      // ms — line 1 anim duration  (total ≈1–1.5s)
-    line2Dur:     650,      // ms — line 2 anim duration
-    line2Delay:   160,      // ms — delay before line 2 starts
-    scaleStart:   95,       // % — line 2 scale at 0% keyframe
+    line1Dur:     600,      // ms — line 1 anim duration  (total ≈1–1.5s)
+    line2Dur:     700,      // ms — line 2 anim duration
+    line2Delay:   200,      // ms — nicer stagger between the two lines
+    scaleStart:   92,       // % — line 2 scale at 0% keyframe (smooth reveal)
     direction:    'up',     // 'up' | 'down' | 'left' | 'right'
     line1Color:   '#AAAAAA',// light gray top line
     line2Color:   '#FFFFFF',// white bottom line
     line1Font:    '',       // '' = inherit main font
     line2Font:    '',       // '' = inherit main font
-    line1SizeMul: 0.72,     // × base font size
-    line2SizeMul: 1.18,     // × base font size
+    // Size multipliers kept at/below 1× so Apple Reveal renders at the SAME
+    // font size as every other style (it used to blow up to 1.18× base).
+    line1SizeMul: 0.85,     // × base font size — subtle contrast on the top line
+    line2SizeMul: 1.0,      // × base font size — main line matches base exactly
     line1Weight:  300,      // font-weight thin
     line2Weight:  800,      // font-weight heavy
     trackingLine1:0.08,     // em letter-spacing line 1
     trackingLine2:0.01,     // em letter-spacing line 2
     lineGap:      8,        // px gap between lines (-40…+40)
-    glowAmt:      18,       // px white glow on line 2
+    glowAmt:      14,       // px white glow on line 2 (softer)
     splitAt:      -1,       // -1 = auto midpoint split
   },
-  7: { bgOpacity:88, barRadius:7, padH:8, padV:5,
-       startDelay:50, bounceScale:118, bouncePeakAt:35,
-       bez1x:0.34, bez1y:1.56, bez2x:0.64, bez2y:1.0 },
-  8: { 
-    wordDelay: 200,         // Delay between words (ms)
-    animDuration: 600,      // Each word animation duration
-    sizeVariation: 'high',  // low, medium, high
-    randomFonts: true,      // Mix different fonts
-    randomColors: true,     // Different colors per word
+  // Subtle by default: full-opacity bar, late peak, gentle 104% bounce and a
+  // smooth ease-out curve (no springy overshoot).
+  7: { bgOpacity:100, barRadius:7, padH:8, padV:5,
+       startDelay:50, bounceScale:104, bouncePeakAt:70,
+       bez1x:0.25, bez1y:1.0, bez2x:0.5, bez2y:1.0 },
+  // Subtle & slow by default: gentle per-word stagger, long soft animation, and
+  // NO size/font/colour randomisation — that kept words jumping around and made
+  // the text far bigger than other styles. Users can re-enable per-style.
+  8: {
+    wordDelay: 260,         // Delay between words (ms) — calmer stagger
+    animDuration: 900,      // Each word animation duration — slow / subtle
+    sizeVariation: 'low',   // low, medium, high — 'low' stays near base size
+    randomFonts: false,     // consistent font → stable word positions
+    randomColors: false,    // single colour by default (subtle)
     accentColor1: '#e74c3c', // Red accent
     accentColor2: '#3498db', // Blue accent
     baseColor: '#ffffff',   // Default word color
@@ -13709,6 +13849,29 @@ function revertTranslation() {
 // Builds a strict, Premiere-Pro-safe SRT: sorted by time, no zero/negative
 // duration, no overlapping timestamps, no empty blocks, CRLF line endings,
 // and a UTF-8 BOM so accented characters (á, é, í, ó, ú, ñ ...) import correctly.
+// Build a strict, Premiere-safe SRT string from raw [{start,end,text}] entries.
+function _srtFromEntries(rawEntries) {
+  function st(s) {
+    s = Math.max(0, s);
+    const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.floor(s%60),ms=Math.round((s%1)*1000);
+    return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')},${String(ms).padStart(3,'0')}`;
+  }
+  const entries = rawEntries
+    .filter(e => e.text && String(e.text).trim().length > 0)
+    .map(e => ({ start: e.start, end: e.end, text: String(e.text).trim() }))
+    .sort((a,b) => a.start - b.start);
+  const MIN_DUR = 0.3;
+  for(let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if(e.end - e.start < MIN_DUR) e.end = e.start + MIN_DUR;
+    const nxt = entries[i+1];
+    if(nxt && e.end > nxt.start) e.end = Math.max(nxt.start - 0.01, e.start + 0.05);
+  }
+  let lines = [];
+  entries.forEach((e,i) => { lines.push(`${i+1}`); lines.push(`${st(e.start)} --> ${st(e.end)}`); lines.push(e.text); lines.push(''); });
+  return '﻿' + lines.join('\r\n');
+}
+
 function buildValidatedSRT() {
   function st(s) {
     s = Math.max(0, s);
@@ -13747,6 +13910,46 @@ function exportSRT() {
   const srt = buildValidatedSRT();
   dlFile(srt, 'captions.srt', 'text/plain;charset=utf-8');
   showToast('✅ SRT exported!');
+}
+
+// Export TWO SRT files — the current (original) captions + a translated copy —
+// sharing the SAME (cut-matched) timings. Import both into Premiere as separate
+// caption tracks to show both languages at once. Does NOT alter live captions.
+async function exportBilingualSRT() {
+  if(wordGroups.length === 0) { showToast('⚠️ Generate captions first'); return; }
+  const lang = (prompt('Second language code for the extra SRT (e.g. es, fr, de, hi, ar):', 'es') || '').trim().toLowerCase();
+  if(!lang) return;
+
+  const base = wordGroups
+    .filter(g => g.words && g.words.join(' ').trim())
+    .map(g => ({ start: g.start, end: g.end, text: g.words.join(' ').trim() }))
+    .sort((a,b) => a.start - b.start);
+  if(!base.length) { showToast('⚠️ No captions to export'); return; }
+
+  showToast('🌐 Translating ' + base.length + ' captions → ' + lang + '…');
+
+  // Translate in chunks (count + char limits) without touching wordGroups
+  const translated = new Array(base.length);
+  let cur = [], curIdx = [], curLen = 0;
+  const flush = async () => {
+    if(!cur.length) return;
+    let res;
+    try { res = await translateBatch(cur, lang); }
+    catch(e) { res = null; }
+    cur.forEach((txt, k) => { translated[curIdx[k]] = (res && res[k]) ? res[k] : txt; });
+    cur = []; curIdx = []; curLen = 0;
+  };
+  for(let i = 0; i < base.length; i++) {
+    if(cur.length >= 25 || curLen + base[i].text.length > 1400) await flush();
+    cur.push(base[i].text); curIdx.push(i); curLen += base[i].text.length;
+  }
+  await flush();
+
+  const transEntries = base.map((e, i) => ({ start: e.start, end: e.end, text: translated[i] || e.text }));
+
+  dlFile(_srtFromEntries(base),        'captions_original.srt',  'text/plain;charset=utf-8');
+  dlFile(_srtFromEntries(transEntries), 'captions_' + lang + '.srt', 'text/plain;charset=utf-8');
+  showToast('✅ 2 SRTs exported — import BOTH into Premiere as caption tracks to show both languages');
 }
 
 // ── PREMIERE PRO XML - SRT Format (Working) ──
@@ -19455,7 +19658,18 @@ function collectProjectData() {
     return rest;
   });
 
+  // Serialize the media files by PATH (File/URL objects can't persist). On open
+  // we re-link from these paths so footage + everything comes back.
+  const filesToSave = (projectFiles || []).map(f => ({
+    id: f.id, name: f.name, path: f.path || null,
+    duration: f.duration || 0, isVideo: !!f.isVideo,
+    videoWidth: f.videoWidth || null, videoHeight: f.videoHeight || null,
+    ext: f.ext || null, colorIdx: f.colorIdx || 0,
+    meta: f.meta ? JSON.parse(JSON.stringify(f.meta)) : null,
+  }));
+
   return {
+    projectFiles:      filesToSave,
     _version:          PROJECT_VERSION,
     _saved:            new Date().toISOString(),
     _audioName:        window._audioFileName || '',
@@ -19481,6 +19695,12 @@ function collectProjectData() {
     clipCaptionGroups: JSON.parse(JSON.stringify(clipCaptionGroups || {})),
     activeProjectId,
     projects:          JSON.parse(JSON.stringify(projectsToSave)),
+    // Playback/media state so cut (multi-segment) timelines resume correctly
+    mediaEffectiveStart: window._mediaEffectiveStart || 0,
+    mediaEffectiveEnd:   window._mediaEffectiveEnd != null ? window._mediaEffectiveEnd : null,
+    virtualT:            window._virtualT || 0,
+    isVideoMode:         !!window._isVideoMode,
+    activePreviewClipId: (typeof _activePreviewClipId !== 'undefined' ? _activePreviewClipId : null),
   };
 }
 
@@ -19496,11 +19716,64 @@ function saveProject() {
   a.click();
   URL.revokeObjectURL(url);
 
+  // Also stash it as the "last project" for one-click resume
+  _autosaveLastProject();
+
   // Pulse the save button
   const btn = document.querySelector('[onclick="saveProject()"]');
   if(btn) { btn.classList.add('save-pulse'); setTimeout(() => btn.classList.remove('save-pulse'), 400); }
   showToast('✅ Project saved: ' + a.download);
 }
+
+// ── One-click resume: auto-save the whole project to app storage ──
+function _autosaveLastProject() {
+  try {
+    if(!window.electronAPI || !window.electronAPI.saveLastProject) return;
+    if(!audioClips || !audioClips.length) return;       // nothing to save yet
+    const data = collectProjectData();
+    data._savedName = window._audioFileName || 'project';
+    window.electronAPI.saveLastProject(JSON.stringify(data)).catch(() => {});
+  } catch(_) {}
+}
+
+// Auto-save every 20s so a resume is always available even without a manual Save.
+setInterval(() => { if(audioClips && audioClips.length) _autosaveLastProject(); }, 20000);
+
+// One-click open of the auto-saved last project.
+async function openLastProject() {
+  if(!window.electronAPI || !window.electronAPI.loadLastProject) { showToast('⚠️ Resume not available'); return; }
+  try {
+    const res = await window.electronAPI.loadLastProject();
+    if(!res || !res.success || !res.data) { showToast('No previous project found'); return; }
+    const data = JSON.parse(res.data);
+    await applyProjectData(data);
+    const banner = document.getElementById('resumeBanner'); if(banner) banner.remove();
+    showToast('✅ Resumed: ' + (data._savedName || 'last project'));
+  } catch(e) { showToast('❌ Could not resume: ' + e.message); }
+}
+
+// On launch, if a last project exists, offer a one-click resume banner.
+async function _offerResumeLastProject() {
+  if(!window.electronAPI || !window.electronAPI.loadLastProject) return;
+  try {
+    const res = await window.electronAPI.loadLastProject();
+    if(!res || !res.success || !res.data) return;
+    let name = 'last project';
+    try { name = (JSON.parse(res.data)._savedName) || name; } catch(_) {}
+    if(document.getElementById('resumeBanner')) return;
+    const b = document.createElement('div');
+    b.id = 'resumeBanner';
+    b.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:99998;' +
+      'background:linear-gradient(135deg,#1a3a2a,#1e4a34);border:1px solid rgba(0,229,160,0.4);' +
+      'color:#eafff5;padding:10px 14px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,0.5);' +
+      'display:flex;align-items:center;gap:12px;font-size:13px;';
+    b.innerHTML = '<span>⏮ Resume your last project — <b>' + _seqEsc(name) + '</b>?</span>' +
+      '<button onclick="openLastProject()" style="background:#00e5a0;color:#062;border:none;border-radius:6px;padding:6px 12px;font-weight:800;cursor:pointer;">Open</button>' +
+      '<button onclick="this.parentNode.remove()" style="background:transparent;color:#9fe;border:1px solid rgba(255,255,255,0.2);border-radius:6px;padding:6px 10px;cursor:pointer;">Dismiss</button>';
+    document.body.appendChild(b);
+  } catch(_) {}
+}
+window.addEventListener('load', () => setTimeout(_offerResumeLastProject, 800));
 
 function updatePreviewResolutionDisplay(proj) {
   const label = document.getElementById('previewResDisplay');
@@ -19562,27 +19835,34 @@ function loadProject(input) {
   const file = input.files[0];
   if(!file) return;
   const reader = new FileReader();
-  reader.onload = ev => {
+  reader.onload = async ev => {
     try {
       const data = JSON.parse(ev.target.result);
-      applyProjectData(data);
+      await applyProjectData(data);   // async: re-links footage before finishing
       showToast('✅ Project loaded: ' + file.name + (data._audioName ? ' · Audio: ' + data._audioName : ''));
     } catch(e) {
-      alert('❌ Project load karne mein error:\n' + e.message);
+      console.error('[Project] load failed:', e);
+      alert('❌ Project load error:\n' + (e && e.message ? e.message : e));
     }
   };
   reader.readAsText(file);
   input.value = ''; // reset so same file can be re-opened
 }
 
-function applyProjectData(data) {
+async function applyProjectData(data) {
   // Restore core state
   if(data.wordGroups)      wordGroups      = data.wordGroups;
   if(data.masterWords)     masterWords     = data.masterWords;
   if(data.words)           words           = data.words;
   if(data.currentAnimStyle !== undefined) currentAnimStyle = data.currentAnimStyle;
   if(data.layerAnimStyles) layerAnimStyles = data.layerAnimStyles;
-  if(data.animStyleProps)  animStyleProps  = data.animStyleProps;
+  // animStyleProps is declared `const` — mutate in place, never reassign
+  // (reassigning threw "Assignment to constant variable" and aborted the whole
+  // project restore, so nothing opened).
+  if(data.animStyleProps) {
+    Object.keys(animStyleProps).forEach(k => delete animStyleProps[k]);
+    Object.assign(animStyleProps, data.animStyleProps);
+  }
   if(data.animApplyAll !== undefined) animApplyAll = data.animApplyAll;
   if(data.shadows)         shadows         = data.shadows;
   if(data.wordsPerGroup)   wordsPerGroup   = data.wordsPerGroup;
@@ -19602,6 +19882,18 @@ function applyProjectData(data) {
     projects = data.projects;
     // Re-render project/canvas tabs if function exists
     if(typeof renderProjectTabs === 'function') renderProjectTabs();
+  }
+
+  // Restore media/playback bounds BEFORE re-linking footage
+  window._mediaEffectiveStart = data.mediaEffectiveStart || 0;
+  window._mediaEffectiveEnd   = (data.mediaEffectiveEnd != null) ? data.mediaEffectiveEnd : null;
+  window._virtualT            = data.virtualT || 0;
+  window._isVideoMode         = !!data.isVideoMode;
+  if(typeof _activePreviewClipId !== 'undefined') _activePreviewClipId = data.activePreviewClipId || null;
+
+  // ── Restore FOOTAGE from saved paths (re-link + preview + waveforms) ──
+  if(data.projectFiles && data.projectFiles.length) {
+    await _restoreProjectFiles(data.projectFiles);
   }
 
   // Restore UI inputs
@@ -19638,10 +19930,91 @@ function applyProjectData(data) {
   if(card) card.classList.add('selected');
 
   updateUndoRedoBtns();
+}
 
-  if(data._audioName) {
-    showToast('⚠️ Audio file "' + data._audioName + '" dobara load karna hoga (+ Audio Load button).');
+// Re-link the project's media from saved paths, rebuild the preview + waveforms.
+async function _restoreProjectFiles(files) {
+  projectFiles = [];
+  window._fileWaveforms = {};
+  let missing = 0;
+  for(const sf of files) {
+    let url = null;
+    if(sf.path && window.electronAPI && window.electronAPI.getFileURL) {
+      try { url = await window.electronAPI.getFileURL(sf.path); } catch(_) {}
+    }
+    if(!url) missing++;
+    projectFiles.push({
+      id: sf.id, name: sf.name, path: sf.path || null, url: url, file: null,
+      duration: sf.duration || 0, isVideo: !!sf.isVideo,
+      videoWidth: sf.videoWidth || null, videoHeight: sf.videoHeight || null,
+      ext: sf.ext || null, colorIdx: sf.colorIdx || 0, meta: sf.meta || null, needsWarning: false
+    });
   }
+  if(typeof renderProjectPanel === 'function') renderProjectPanel();
+
+  // Re-establish the preview video/audio for the first clip on the timeline
+  _restorePreviewFromClips();
+
+  // Re-extract each file's waveform natively (async — track refreshes as they arrive)
+  projectFiles.forEach(pf => {
+    if(pf.path && window.electronAPI && window.electronAPI.getWaveformPeaks) {
+      window.electronAPI.getWaveformPeaks({ videoPath: pf.path }).then(res => {
+        if(res && res.success && res.peaks) {
+          window._fileWaveforms[pf.id] = Float32Array.from(res.peaks);
+          if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+        }
+      }).catch(() => {});
+    }
+  });
+
+  if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+  if(missing) showToast('⚠️ ' + missing + ' media file(s) not found at their saved location — re-import them.');
+}
+
+// Create the preview <video>/<audio> element from the first clip's restored URL.
+function _restorePreviewFromClips() {
+  if(!audioClips || !audioClips.length) return;
+  const sorted = audioClips.slice().sort((a, b) => a.timelineStart - b.timelineStart);
+  const vt = window._virtualT || 0;
+  // Use the segment under the saved playhead (or the active clip, or the first).
+  const clip = sorted.find(c => vt >= c.timelineStart && vt < c.timelineEnd) ||
+               sorted.find(c => c.id === (typeof _activePreviewClipId !== 'undefined' ? _activePreviewClipId : null)) ||
+               sorted[0];
+  if(!clip) return;
+  const pf = projectFiles.find(f => f.id === clip.fileId);
+  if(!pf || !pf.url) return;
+  const seekSrc = (clip.trimIn || 0) + Math.max(0, vt - clip.timelineStart);
+
+  const old = document.getElementById('previewVideoEl'); if(old) old.remove();
+  try { if(audio) audio.pause(); } catch(_) {}
+  const isVideo = pf.isVideo || /\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(pf.name || '');
+  const pw = document.getElementById('previewWrap');
+  if(isVideo) {
+    const v = document.createElement('video');
+    v.id = 'previewVideoEl'; v.src = pf.url; v.preload = 'auto'; v.playsInline = true;
+    v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;display:block;';
+    if(pw) pw.insertBefore(v, pw.firstChild);
+    const bg = document.getElementById('previewBg'); if(bg) bg.style.display = 'none';
+    const tag = document.getElementById('videoModeTag'); if(tag) tag.style.display = 'block';
+    audio = v; window._isVideoMode = true;
+  } else {
+    audio = new Audio(pf.url); window._isVideoMode = false;
+  }
+  // Keep captions/playhead synced during playback (rAF tick also runs on play).
+  audio.addEventListener('timeupdate', () => { if(typeof onTimeUpdate === 'function') onTimeUpdate(); });
+  // Seek to the saved playhead position on the correct segment once ready.
+  const seekWhenReady = () => {
+    try { audio.currentTime = seekSrc; } catch(_) {}
+    if(typeof onTimeUpdate === 'function') onTimeUpdate();
+    audio.removeEventListener('loadedmetadata', seekWhenReady);
+  };
+  audio.addEventListener('loadedmetadata', seekWhenReady);
+  window._audioFile = null; window._audioFileName = pf.name;
+  window._isAudioPaused = true;
+  if(typeof _activePreviewClipId !== 'undefined') _activePreviewClipId = clip.id;
+  const hint = document.getElementById('previewHint'); if(hint) hint.style.display = 'none';
+  const btn = document.getElementById('playBtn'); if(btn) btn.disabled = false;
+  const acBtn = document.getElementById('autoCaptionBtn'); if(acBtn) acBtn.disabled = false;
 }
 
 // Store audio filename when loading audio
@@ -21872,6 +22245,44 @@ document.addEventListener('mouseup', function() {
 });
 
 // ── Clip Move Drag Function ──
+// ─────────────────────────────────────────────────────────────────
+// _syncSingleClipBounds()
+// In SINGLE-clip mode playback maps timeline→source through the globals
+//   source = _mediaEffectiveStart + timelineT
+//   stop-at = _mediaEffectiveEnd (source time)
+// but trimming/moving a clip only changed clip.trimIn/trimOut/timelineStart.
+// Result: drag a trimmed clip to 0 and playback started from the ORIGINAL file
+// start (trim ignored). Derive the mapping from the clip so it always matches:
+//   source = clip.trimIn + (timelineT - clip.timelineStart)
+// ─────────────────────────────────────────────────────────────────
+function _syncSingleClipBounds(opts) {
+  if(!audioClips || audioClips.length !== 1) return;   // multi-clip uses _seekMultiClip
+  const c = audioClips[0];
+  if(!c) return;
+  const span   = Math.max(0.001, c.timelineEnd - c.timelineStart);
+  const trimIn = c.trimIn || 0;
+  const trimOut = (c.trimOut != null) ? c.trimOut : (trimIn + span);
+
+  window._mediaEffectiveStart = Math.max(0, trimIn - (c.timelineStart || 0));
+  window._mediaEffectiveEnd   = trimOut;
+  // Enforce the out-point only when the clip actually ends before the source does
+  const srcDur = (audio && audio.duration) ? audio.duration : null;
+  window._trimEndEnforced = !!(srcDur && trimOut < srcDur - 0.05);
+
+  // Keep the current position inside the visible range so the playhead and the
+  // frame on screen agree with the new mapping.
+  if(audio && !isNaN(audio.currentTime)) {
+    const lo = window._mediaEffectiveStart + (c.timelineStart || 0);
+    if(audio.currentTime < lo - 0.001 || audio.currentTime > trimOut + 0.001) {
+      try { audio.currentTime = Math.min(Math.max(audio.currentTime, lo), trimOut); } catch(_) {}
+    }
+  }
+  if(!(opts && opts.silent)) {
+    currentGroup = -2; lastActiveWord = -2;
+    if(typeof onTimeUpdate === 'function') onTimeUpdate();
+  }
+}
+
 function addClipMoveDrag(el, clip, totalW, dur) {
   let dragState = null;
   let rafId = null;
@@ -22057,6 +22468,11 @@ function addClipMoveDrag(el, clip, totalW, dur) {
             }
           });
         }
+
+        // Re-derive the single-clip playback mapping — otherwise dragging a
+        // TRIMMED clip (e.g. to the timeline start) made playback start from the
+        // beginning of the original footage instead of the trim point.
+        _syncSingleClipBounds();
 
         buildAudioClipTrack();
         buildTimeline();
@@ -22430,25 +22846,48 @@ function buildAudioClipTrack() {
       el.appendChild(wf);
 
       requestAnimationFrame(() => {
-        const cw = wf.offsetWidth || Math.max(8, width);
+        // Cap the canvas backing store: a clip's display width can exceed the
+        // browser's max canvas size (~32767px) at high zoom, which makes the
+        // canvas render blank/torn (the "glitchy / no waveform" bug). We draw at
+        // a capped width and let CSS (width:100%) stretch it across the clip.
+        const displayW = wf.offsetWidth || Math.max(8, width);
+        const cw = Math.min(displayW, 16000);
         wf.width = cw;
         const cc = wf.getContext('2d');
         if(!cc) return;
 
-        const clipWaveData = (window._fileWaveforms && window._fileWaveforms[clip.fileId]) 
-          || waveformData;
+        // Use THIS clip's own waveform. Only fall back to the shared global
+        // waveformData in single-clip mode — in multi-clip mode that shared
+        // array was being drawn on EVERY clip (clip 2 showed clip 1's wave).
+        const perFile = (window._fileWaveforms && window._fileWaveforms[clip.fileId]) || null;
+        const clipWaveData = perFile || (audioClips.length <= 1 ? waveformData : null);
         if(!clipWaveData || !clipWaveData.length) return;
 
         const h2 = Math.round(wf.height / 2);
         cc.clearRect(0, 0, cw, wf.height);
 
-        const fileDur = (pf && pf.duration) || (audio ? audio.duration : dur) || dur;
+        // Use THIS clip's own file duration to map trim → waveform indices.
+        // Never fall back to audio.duration — that's the active preview clip's
+        // video (a different file), which mapped clip 2 to the wrong waveform.
         const clipInternalStart = clip.trimIn || 0;
         const clipInternalEnd = clip.trimOut || (clipInternalStart + (clip.timelineEnd - clip.timelineStart));
-        const iS = Math.floor((clipInternalStart / fileDur) * clipWaveData.length);
-        const iE = Math.ceil((clipInternalEnd / fileDur) * clipWaveData.length);
+        const fileDur = (pf && ((pf.meta && pf.meta.duration) || pf.duration)) || clipInternalEnd || dur;
+        const iS = Math.max(0, Math.floor((clipInternalStart / fileDur) * clipWaveData.length));
+        const iE = Math.min(clipWaveData.length, Math.ceil((clipInternalEnd / fileDur) * clipWaveData.length));
         const len = Math.max(1, iE - iS);
-        const smp = Math.min(len, cw);
+        const smp = Math.max(1, Math.min(len, cw));
+
+        // Per-column PEAK (max over each bucket) instead of single-sampling — this
+        // avoids aliasing that made quiet/dense regions look flat, and a gentle
+        // boost keeps quiet speech visible.
+        const peaks = new Float32Array(smp);
+        for(let i = 0; i < smp; i++) {
+          const b0 = iS + Math.floor((i / smp) * len);
+          const b1 = Math.max(b0 + 1, iS + Math.floor(((i + 1) / smp) * len));
+          let mx = 0;
+          for(let j = b0; j < b1 && j < clipWaveData.length; j++) { const v = clipWaveData[j]; if(v > mx) mx = v; }
+          peaks[i] = Math.min(1, mx * 1.25);
+        }
 
         const g = cc.createLinearGradient(0, 0, 0, wf.height);
         g.addColorStop(0,   waveCol + '0.08)');
@@ -22456,14 +22895,8 @@ function buildAudioClipTrack() {
         g.addColorStop(1,   waveCol + '0.08)');
         cc.beginPath();
         cc.moveTo(0, h2);
-        for(let i = 0; i <= smp; i++) {
-          const a = clipWaveData[Math.min(iS + Math.floor((i / smp) * len), clipWaveData.length - 1)] || 0;
-          cc.lineTo((i / smp) * cw, h2 - a * h2 * 0.9);
-        }
-        for(let i = smp; i >= 0; i--) {
-          const a = clipWaveData[Math.min(iS + Math.floor((i / smp) * len), clipWaveData.length - 1)] || 0;
-          cc.lineTo((i / smp) * cw, h2 + a * h2 * 0.9);
-        }
+        for(let i = 0; i < smp; i++) cc.lineTo((i / smp) * cw, h2 - peaks[i] * h2 * 0.9);
+        for(let i = smp - 1; i >= 0; i--) cc.lineTo((i / smp) * cw, h2 + peaks[i] * h2 * 0.9);
         cc.closePath();
         cc.fillStyle = g;
         cc.fill();
@@ -22762,6 +23195,14 @@ function selectClip(clipId, opts = {}) {
   primarySelectedClipId = primaryId;
   selectedClipId = primaryId;
 
+  // Selecting a clip is exclusive from caption-layer selection. The Delete-key
+  // handler bails when caption layers are selected, which was blocking clip
+  // deletion — clear them so Delete removes the selected clip.
+  if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.size) {
+    selectedLayerIds.clear();
+    if(typeof updateLayerSelectionUI === 'function') updateLayerSelectionUI();
+  }
+
   if(!silent) {
     // Only update the selection highlight — do NOT rebuild the whole clip track.
     // Rebuilding on mousedown destroyed the element the user just grabbed, which
@@ -22913,6 +23354,9 @@ function addClipTrimDrag(handle, clip, side, totalW, dur) {
           _syncCaptionsForTrim(clip, 'right', origEnd,   clip.timelineEnd);
           clip._trimmedRight = true; // flag so boundary enforcement activates
         }
+        // Keep the playback mapping in sync with the new trim points
+        _syncSingleClipBounds();
+
         buildAudioClipTrack();
         buildWaveform(); // ✅ FIX: redraw waveform clipped to new trim boundaries
         const trimTime = side === 'left' ? clip.timelineStart : clip.timelineEnd;
@@ -23880,7 +24324,10 @@ function _closeGap(leftClipId, rightClipId) {
   
   // Merge caption groups
   if(typeof mergeClipGroupsIntoMain === 'function') mergeClipGroupsIntoMain();
-  
+
+  // Clip positions changed — re-derive single-clip playback mapping
+  if(typeof _syncSingleClipBounds === 'function') _syncSingleClipBounds();
+
   // Rebuild UI
   buildAudioClipTrack();
   buildTimeline();
@@ -24190,8 +24637,31 @@ function _scToggle(id) {
   _scRenderTimelineMarkers();
 }
 
+// Seek the preview to a detection's TIMELINE time (t). Maps to the correct clip
+// + source position for both single- and multi-clip timelines, and moves the
+// playhead — previously it set audio.currentTime = t directly, which for a
+// trimmed/multi-clip project landed at the wrong place (clip start).
 function _scSeek(t) {
-  if(audio) { audio.currentTime = t; currentGroup = -2; lastActiveWord = -2; if(typeof onTimeUpdate==='function') onTimeUpdate(); }
+  if(!audio || isNaN(t)) return;
+  if(audioClips && audioClips.length > 1) {
+    const sorted = audioClips.slice().sort((a,b) => a.timelineStart - b.timelineStart);
+    const clip = sorted.find(c => t >= c.timelineStart && t < c.timelineEnd) ||
+                 sorted.find(c => c.timelineStart >= t) || sorted[0];
+    window._virtualT = t;
+    if(clip && typeof _seekMultiClip === 'function') _seekMultiClip(t, clip);
+  } else {
+    const effStart = window._mediaEffectiveStart || 0;
+    audio.currentTime = Math.min((audio.duration || Infinity), effStart + t);
+    window._virtualT = t;
+  }
+  currentGroup = -2; lastActiveWord = -2;
+  if(typeof onTimeUpdate === 'function') onTimeUpdate();
+  // Scroll the timeline so the playhead is visible at the jumped-to position.
+  const scroll = document.getElementById('timelineScroll');
+  if(scroll && typeof getTLDur === 'function' && typeof getTLTotalW === 'function') {
+    const px = (t / (getTLDur() || 1)) * getTLTotalW();
+    scroll.scrollLeft = Math.max(0, px - (scroll.clientWidth - 68) / 2);
+  }
 }
 
 function editFillerWords() {
@@ -24285,6 +24755,15 @@ function applySmartCut() {
   masterWords = remapped;
   if(typeof buildGroupsFromMaster === 'function') buildGroupsFromMaster();
 
+  // Smart Cut makes masterWords/wordGroups the single source of truth. Drop the
+  // per-clip caption groups (which still hold PRE-CUT times) and any lingering
+  // captionGroupId on the new segments — otherwise a later merge (e.g. on reopen)
+  // rebuilds captions from the old times and everything desyncs / looks uncut.
+  if(typeof clipCaptionGroups !== 'undefined') {
+    Object.keys(clipCaptionGroups).forEach(k => delete clipCaptionGroups[k]);
+  }
+  audioClips.forEach(c => { delete c.captionGroupId; });
+
   window._mediaEffectiveEnd = tl;
   if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
   if(typeof buildTimeline === 'function') buildTimeline();
@@ -24297,6 +24776,7 @@ function applySmartCut() {
   if(typeof _scRenderTimelineMarkers === 'function') _scRenderTimelineMarkers();
   showToast('✂ Smart Cut applied — removed ' + fmt(removedTotal) + ' · use Undo to revert');
   const undoBtn = document.getElementById('scUndoBtn'); if(undoBtn) undoBtn.style.display = '';
+  if(typeof _autosaveLastProject === 'function') _autosaveLastProject();   // remember the cut state
 }
 
 function undoSmartCut() {
@@ -24385,6 +24865,102 @@ function exportPremiereXML() {
   a.click();
   URL.revokeObjectURL(a.href);
   showToast('🎬 Premiere XML exported — in Premiere: File → Import → select the .fcpxml');
+}
+
+// ── Shared helpers for Premiere exports ──
+function _scPremiereMeta() {
+  const fileOrder = [], fileIdx = {};
+  audioClips.forEach(c => { if(!(c.fileId in fileIdx)) { fileIdx[c.fileId] = fileOrder.length; fileOrder.push(c.fileId); } });
+  const pf0 = projectFiles.find(f => f.id === fileOrder[0]) || {};
+  const meta = pf0.meta || {};
+  const fps = Math.max(1, Math.round(meta.fps || (typeof _projFps === 'function' ? _projFps() : 30)));
+  const W = meta.width || pf0.videoWidth || 1920;
+  const H = meta.height || pf0.videoHeight || 1080;
+  const sorted = audioClips.slice().sort((a, b) => a.timelineStart - b.timelineStart);
+  return { fileOrder, fileIdx, pf0, fps, W, H, sorted };
+}
+
+// Final Cut Pro 7 XML (.xml) — this is what Premiere's "Final Cut Pro XML"
+// import expects (NOT .fcpxml). Auto-links media by pathurl; each cut segment is
+// a clip referencing the full source so you can trim/extend in Premiere.
+function exportFCP7XML() {
+  if(!audioClips || !audioClips.length) { showToast('⚠️ No clips on the timeline'); return; }
+  const { fileIdx, fps, W, H, sorted } = _scPremiereMeta();
+  const F = (t) => Math.round(t * fps);                 // seconds → frames
+  const rate = '<rate><timebase>' + fps + '</timebase><ntsc>FALSE</ntsc></rate>';
+  const fileUrl = (p) => 'file://localhost/' + String(p || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const seqDurF = F(Math.max.apply(null, sorted.map(c => c.timelineEnd)));
+
+  // Sample characteristics with SQUARE pixels — without <pixelaspectratio> Premiere
+  // assumes a non-square (DV/NTSC) PAR and STRETCHES the footage horizontally.
+  const sampleChars = (incRate) =>
+    '<samplecharacteristics>' + (incRate ? rate : '') +
+    '<width>' + W + '</width><height>' + H + '</height>' +
+    '<anamorphic>FALSE</anamorphic>' +
+    '<pixelaspectratio>square</pixelaspectratio>' +
+    '<fielddominance>none</fielddominance>' +
+    '</samplecharacteristics>';
+
+  const defined = {};
+  const fileEl = (fid, asRef) => {
+    const id = 'file-' + fileIdx[fid];
+    if(asRef || defined[id]) return '<file id="' + id + '"/>';
+    defined[id] = true;
+    const pf = projectFiles.find(f => f.id === fid) || {};
+    const durF = F((pf.meta && pf.meta.duration) || pf.duration || 36000);
+    return '<file id="' + id + '"><name>' + _seqEsc(pf.name || 'media') + '</name>' +
+      '<pathurl>' + fileUrl(pf.path) + '</pathurl>' + rate + '<duration>' + durF + '</duration>' +
+      '<media><video>' + sampleChars(false) + '</video>' +
+      '<audio><channelcount>2</channelcount></audio></media></file>';
+  };
+  const clipItem = (c, i, kind) => {
+    const inF = F(c.trimIn || 0);
+    const outF = F(c.trimOut != null ? c.trimOut : (c.trimIn || 0) + (c.timelineEnd - c.timelineStart));
+    const sF = F(c.timelineStart), eF = F(c.timelineEnd);
+    return '<clipitem id="clip' + kind + '-' + i + '"><name>' + _seqEsc('seg' + (i + 1)) + '</name>' +
+      '<duration>' + Math.max(1, outF - inF) + '</duration>' + rate +
+      '<start>' + sF + '</start><end>' + eF + '</end><in>' + inF + '</in><out>' + outF + '</out>' +
+      (kind === 'a' ? fileEl(c.fileId, true) + '<sourcetrack><mediatype>audio</mediatype></sourcetrack>' : fileEl(c.fileId, false)) +
+      '</clipitem>';
+  };
+
+  const vtrack = sorted.map((c, i) => clipItem(c, i, 'v')).join('');
+  const atrack = sorted.map((c, i) => clipItem(c, i, 'a')).join('');
+
+  const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4">' +
+    '<sequence><name>Smart Cut</name><duration>' + seqDurF + '</duration>' + rate +
+    '<media>' +
+    '<video><format>' + sampleChars(true) + '</format><track>' + vtrack + '</track></video>' +
+    '<audio><track>' + atrack + '</track></audio>' +
+    '</media></sequence></xmeml>';
+
+  dlFile(xml, (window._audioFileName || 'project').replace(/\.[^.]+$/, '') + '_premiere.xml', 'application/xml');
+  showToast('🎬 FCP7 XML exported — Premiere: File → Import → set type to "Final Cut Pro XML"');
+}
+
+// EDL (CMX3600) — universal; every Premiere version imports it. Relink media once.
+function exportEDL() {
+  if(!audioClips || !audioClips.length) { showToast('⚠️ No clips on the timeline'); return; }
+  const { fps, sorted } = _scPremiereMeta();
+  const tc = (sec) => {
+    sec = Math.max(0, sec);
+    let f = Math.round(sec * fps);
+    const ff = f % fps; const s = Math.floor(f / fps);
+    const p2 = n => String(n).padStart(2, '0');
+    return p2(Math.floor(s / 3600)) + ':' + p2(Math.floor(s / 60) % 60) + ':' + p2(s % 60) + ':' + p2(ff);
+  };
+  let out = 'TITLE: SMART CUT\r\nFCM: NON-DROP FRAME\r\n';
+  sorted.forEach((c, i) => {
+    const n = String(i + 1).padStart(3, '0');
+    const srcIn = c.trimIn || 0;
+    const srcOut = c.trimOut != null ? c.trimOut : (c.trimIn || 0) + (c.timelineEnd - c.timelineStart);
+    const pf = projectFiles.find(f => f.id === c.fileId) || {};
+    out += n + '  AX       V     C        ' + tc(srcIn) + ' ' + tc(srcOut) + ' ' + tc(c.timelineStart) + ' ' + tc(c.timelineEnd) + '\r\n';
+    out += n + '  AX       A     C        ' + tc(srcIn) + ' ' + tc(srcOut) + ' ' + tc(c.timelineStart) + ' ' + tc(c.timelineEnd) + '\r\n';
+    out += '* FROM CLIP NAME: ' + (pf.name || 'clip') + '\r\n';
+  });
+  dlFile(out, (window._audioFileName || 'project').replace(/\.[^.]+$/, '') + '.edl', 'text/plain;charset=utf-8');
+  showToast('📼 EDL exported — Premiere: File → Import, then relink to your media');
 }
 
 // Keep the AI detection markers aligned whenever the timeline rebuilds (zoom,
