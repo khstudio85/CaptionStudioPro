@@ -12392,6 +12392,90 @@ function zoomToSlider(z) {
   return Math.max(1, Math.round(Math.pow(Math.max(0.2, z) / 0.5, 1/1.5) * 10));
 }
 
+// ═══════════════════════════════════════════════════════════════
+// _tlRescale() — FAST zoom path.
+// Zoom only changes the horizontal scale, so there is no need to recreate the
+// timeline DOM (buildTimeline() rebuilt every caption block, clip and waveform
+// canvas on EVERY zoom step — that's what made zooming lag/stick on big
+// projects). Here we just reposition the existing px-positioned elements.
+// Ruler ticks use % positioning so they follow the container automatically.
+// Expensive work (waveform redraw at the new scale) is debounced until the user
+// stops zooming — see _tlScheduleZoomSettle().
+// ═══════════════════════════════════════════════════════════════
+function _tlRescale() {
+  const dur    = getTLDur();
+  const totalW = getTLTotalW();
+  if(!dur || !totalW) return;
+  const innerW = totalW + getTLHeadroomPx();
+
+  const inner  = document.getElementById('timelineInner');
+  const tracks = document.getElementById('tlTracks');
+  if(inner)  inner.style.width  = (innerW + 68) + 'px';
+  if(tracks) tracks.style.width = innerW + 'px';
+  ['tlRulerRow','tlCaptionTrack','tlTrackGap','tlAudioTrack','tlBottomZone'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.width = innerW + 'px';
+  });
+  const clipsWrap = document.getElementById('tlAudioClips');
+  if(clipsWrap) clipsWrap.style.width = innerW + 'px';
+  const wordsDiv = document.getElementById('tlWords');
+  if(wordsDiv) wordsDiv.style.width = totalW + 'px';
+
+  // Audio-track background grid should track the zoom too
+  const audioBg = document.querySelector('.tl-audio-track-bg');
+  if(audioBg) audioBg.style.backgroundSize = Math.max(20, Math.round(80 * tlZoom)) + 'px 100%';
+
+  // Caption blocks
+  document.querySelectorAll('#tlWords .tl-group-block').forEach(el => {
+    const g = wordGroups[parseInt(el.dataset.gi)];
+    if(!g) return;
+    el.style.left  = ((g.start / dur) * totalW) + 'px';
+    el.style.width = Math.max(((g.end - g.start) / dur) * totalW - 1, 4) + 'px';
+  });
+
+  // Clips + their linked audio shadows
+  const clipById = {};
+  (audioClips || []).forEach(c => { clipById[String(c.id)] = c; });
+  document.querySelectorAll('.tl-audio-clip, .tl-audio-linked-shadow').forEach(el => {
+    const c = clipById[String(el.dataset.clipId)];
+    if(!c) return;
+    el.style.left  = ((c.timelineStart / dur) * totalW) + 'px';
+    el.style.width = Math.max(8, ((c.timelineEnd - c.timelineStart) / dur) * totalW) + 'px';
+  });
+
+  // Smart Cut detection markers: reposition in place when the elements already
+  // exist (avoids re-creating every marker + its listeners on each zoom step).
+  const aiTrack = document.getElementById('tlAiTrack');
+  const markers = aiTrack ? aiTrack.querySelectorAll('.tl-ai-marker') : [];
+  if(markers.length && typeof _scDetections !== 'undefined' && markers.length === _scDetections.length) {
+    aiTrack.style.width = totalW + 'px';
+    const detById = {};
+    _scDetections.forEach(d => { detById[d.id] = d; });
+    markers.forEach(el => {
+      const d = detById[el.dataset.id];
+      if(!d) return;
+      el.style.left  = ((d.startTime / dur) * totalW) + 'px';
+      el.style.width = Math.max(4, (d.duration / dur) * totalW) + 'px';
+    });
+  } else if(typeof _scRenderTimelineMarkers === 'function') {
+    _scRenderTimelineMarkers();
+  }
+
+  if(typeof _buildGapIndicators === 'function') _buildGapIndicators();
+}
+
+// After zooming settles, do the one expensive pass: redraw clip waveforms at the
+// new scale (their canvases are CSS-stretched until then).
+let _tlZoomSettleTimer = null;
+function _tlScheduleZoomSettle() {
+  clearTimeout(_tlZoomSettleTimer);
+  _tlZoomSettleTimer = setTimeout(() => {
+    if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+    if(typeof buildWaveform === 'function') buildWaveform();
+    if(typeof _rebuildWaveformOverlay === 'function') _rebuildWaveformOverlay();
+  }, 200);
+}
+
 function applyZoom(newZoom) {
   const scroll = document.getElementById('timelineScroll');
   const dur    = getTLDur();
@@ -12418,7 +12502,8 @@ function applyZoom(newZoom) {
   if(slider) slider.value = Math.min(200, zoomToSlider(tlZoom));
   if(label)  label.textContent = tlZoom < 10 ? tlZoom.toFixed(1)+'x' : Math.round(tlZoom)+'x';
 
-  buildTimeline();
+  // FAST path — reposition instead of rebuilding the whole timeline DOM.
+  _tlRescale();
 
   // Anchor: keep the playhead at the same on-screen position (or center it if it
   // was off-screen so it never "goes away" when zooming in).
@@ -12431,7 +12516,9 @@ function applyZoom(newZoom) {
   // Force hide global waveform if clips exist
   const strip = document.getElementById('waveformStrip');
   if(strip && audioClips.length > 0) strip.style.display = 'none';
-  if(typeof _rebuildWaveformOverlay === 'function') _rebuildWaveformOverlay();
+
+  // Redraw waveforms at the new scale once zooming settles (debounced)
+  _tlScheduleZoomSettle();
 }
 
 function zoomToLevel(sliderVal) {
