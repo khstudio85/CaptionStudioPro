@@ -23830,7 +23830,13 @@ window.buildTimeline = function() {
     if(selectedClipIds && selectedClipIds.size > 0) {
       e.preventDefault();
       saveHistory('delete clips');
-      
+
+      // Defensive: if the focused clip isn't in the Set the two got out of sync —
+      // trust the focused clip so Delete always removes what looks selected.
+      if(selectedClipId != null && !selectedClipIds.has(selectedClipId)) {
+        selectedClipIds = new Set([selectedClipId]);
+      }
+
       // Copy IDs before deleting
       var idsToDelete = Array.from(selectedClipIds).sort(function(a, b) { return b - a; });
       var deleteCount = idsToDelete.length;
@@ -23961,7 +23967,12 @@ function splitClipAtPlayhead() {
   };
 
   // ── Select the RIGHT clip after split (so playhead continues forward freely) ──
+  // IMPORTANT: keep the selection SET in sync too. It used to keep the pre-split
+  // id, and the Delete handler reads the Set first — so pressing Del after a cut
+  // deleted the original/first clip instead of the one that looked selected.
   selectedClipId = rightClip.id;
+  selectedClipIds = new Set([rightClip.id]);
+  primarySelectedClipId = rightClip.id;
 
   // ── Merge all clip caption groups back into main wordGroups ──
   // This is required so caption blocks on the timeline reflect the split.
@@ -24334,6 +24345,10 @@ document.addEventListener('keydown', ev => {
         window._virtualT = t;
       }
       splitClipAtPlayhead();
+      // Return to the Select tool after cutting. While the razor stays active,
+      // clip mousedown handlers bail out (`if(_razorToolActive) return`), so the
+      // user couldn't select/delete any of the pieces they just created.
+      if(typeof toggleRazorTool === 'function') toggleRazorTool(true);
       requestAnimationFrame(_buildGapIndicators);
       return;
     }
