@@ -4454,6 +4454,14 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 .pp-seq-meta { font-size: 8.5px; color: var(--text3); }
 .pp-seq-rm { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 2px; }
 .pp-seq-rm:hover { color: var(--red, #ff4d6d); }
+/* Project-panel right-click menu (New Sequence From Clip, …) */
+.pp-ctx-item {
+  padding: 7px 9px; border-radius: 5px; cursor: pointer;
+  color: var(--text, #fff); transition: background .1s;
+}
+.pp-ctx-item:hover { background: rgba(108,71,255,0.22); }
+.pp-ctx-item.danger { color: var(--red, #ff4d6d); }
+.pp-ctx-item.danger:hover { background: rgba(255,77,109,0.18); }
 .pp-file-item:hover { border-color: var(--accent2); background: rgba(108,71,255,0.07); }
 .pp-file-item.pf-dragging { opacity: 0.45; border-style: dashed; }
 .pp-file-item.pf-used { border-color: rgba(0,229,160,0.4); }
@@ -21701,7 +21709,8 @@ function renderProjectPanel() {
       draggable="true"
       ondragstart="ppFileDragStart(event,${pf.id})"
       ondragend="ppFileDragEnd(event)"
-      title="Drag to timeline · Double-click to set as main audio">
+      oncontextmenu="ppFileContextMenu(event,${pf.id})"
+      title="Drag to timeline · Double-click to append · Right-click for New Sequence From Clip">
       <div class="pp-file-icon" style="color:${col.badge};">${pf.isVideo ? '🎬' : '🎵'}</div>
       <div class="pp-file-info">
         <div class="pp-file-name">${pf.name}</div>
@@ -22021,17 +22030,10 @@ function clipDropOnTimeline(e) {
     return;
   }
 
-  // A sequence already has clips → let the user choose: append here, or start a
-  // new sequence (canvas matched to this video) for separate captions.
-  askSequenceTarget(pf, (target) => {
-    if(target === 'new') {
-      createSequence();                       // blank sequence + snapshot of the old one
-      if(pf.isVideo) autoCreateCanvasForVideo(pf);
-      addAudioClip(fileId, 0);                // starts at 0 in the fresh timeline
-    } else {
-      addAudioClip(fileId, dropTime);
-    }
-  });
+  // Drop goes straight onto the CURRENT sequence (Premiere behaviour). To start a
+  // fresh sequence from a clip, right-click it in the Project Panel →
+  // "New Sequence From Clip".
+  addAudioClip(fileId, dropTime);
 }
 
 function getTimelineDuration() {
@@ -26153,46 +26155,78 @@ function renderSequencesPanel() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// When media is dropped and a sequence ALREADY has clips, ask whether to
-// append it to the current sequence or start a new one.
-// cb(target) → 'current' | 'new'   (never called if cancelled)
+// PROJECT PANEL right-click menu (Premiere-style)
+//   • New Sequence From Clip — fresh sequence, canvas matched to the clip
+//   • Add to Timeline        — append to the current sequence
+//   • Remove from Project
 // ─────────────────────────────────────────────────────────────────
-function askSequenceTarget(pf, cb) {
-  const hasContent = sequences.length > 0 && audioClips && audioClips.length > 0;
-  if(!hasContent) { cb('current'); return; }
+function closePpMenu() {
+  const m = document.getElementById('ppCtxMenu');
+  if(m) m.remove();
+  document.removeEventListener('mousedown', _ppMenuOutside, true);
+}
+function _ppMenuOutside(e) {
+  if(!e.target.closest || !e.target.closest('#ppCtxMenu')) closePpMenu();
+}
 
-  const cur = sequences.find(s => s.id === activeSequenceId);
-  const old = document.getElementById('seqTargetModal');
-  if(old) old.remove();
+function ppFileContextMenu(ev, fileId) {
+  ev.preventDefault(); ev.stopPropagation();
+  closePpMenu();
+  const pf = projectFiles.find(f => f.id === fileId);
+  if(!pf) return;
 
   const m = document.createElement('div');
-  m.id = 'seqTargetModal';
-  m.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.8);' +
-    'backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;';
-  m.innerHTML =
-    '<div style="background:linear-gradient(135deg,#1a1a24,#12121a);border:1px solid rgba(108,71,255,0.35);' +
-      'border-radius:14px;padding:22px 24px;width:420px;max-width:92vw;box-shadow:0 24px 70px rgba(0,0,0,0.75);">' +
-      '<div style="font-size:16px;font-weight:900;color:#fff;margin-bottom:6px;">Where should this clip go?</div>' +
-      '<div style="font-size:12px;color:#9aa;margin-bottom:18px;">' + _seqEsc(pf && pf.name ? pf.name : 'Clip') + '</div>' +
-      '<button id="seqTgtCurrent" style="width:100%;padding:12px;border-radius:9px;border:none;margin-bottom:9px;' +
-        'background:linear-gradient(135deg,#6c47ff,#9d7eff);color:#fff;font-size:13px;font-weight:800;cursor:pointer;text-align:left;">' +
-        '⬇ Add to “' + _seqEsc(cur ? cur.name : 'current sequence') + '”' +
-        '<div style="font-size:10.5px;font-weight:600;opacity:.85;margin-top:2px;">Appends after the existing clips — caption it next to the old ones</div>' +
-      '</button>' +
-      '<button id="seqTgtNew" style="width:100%;padding:12px;border-radius:9px;margin-bottom:14px;' +
-        'background:var(--bg3,#1c1c26);color:#fff;border:1px solid rgba(255,255,255,0.14);font-size:13px;font-weight:800;cursor:pointer;text-align:left;">' +
-        '＋ Create a new sequence' +
-        '<div style="font-size:10.5px;font-weight:600;opacity:.7;margin-top:2px;">Fresh timeline &amp; captions, canvas matched to this video</div>' +
-      '</button>' +
-      '<button id="seqTgtCancel" style="width:100%;padding:9px;border-radius:8px;background:transparent;' +
-        'color:#889;border:1px solid rgba(255,255,255,0.12);font-size:12px;font-weight:600;cursor:pointer;">Cancel</button>' +
+  m.id = 'ppCtxMenu';
+  m.style.cssText = 'position:fixed;z-index:999999;min-width:210px;padding:4px;' +
+    'background:var(--bg2,#14141c);border:1px solid var(--border2,#3a3a4a);border-radius:8px;' +
+    'box-shadow:0 14px 40px rgba(0,0,0,0.6);font-size:12px;';
+  const item = (label, sub, onclick, danger) =>
+    '<div class="pp-ctx-item' + (danger ? ' danger' : '') + '" data-act="' + onclick + '">' +
+      '<div style="font-weight:700;">' + label + '</div>' +
+      (sub ? '<div style="font-size:9.5px;color:var(--text3,#888);margin-top:1px;">' + sub + '</div>' : '') +
     '</div>';
+  m.innerHTML =
+    '<div style="padding:5px 9px 6px;font-size:9px;font-weight:800;letter-spacing:0.6px;' +
+      'text-transform:uppercase;color:var(--text3,#888);border-bottom:1px solid var(--border,#2a2a3a);' +
+      'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px;">' + _seqEsc(pf.name) + '</div>' +
+    item('🎞 New Sequence From Clip', 'Fresh timeline &amp; captions · canvas matched to this clip', 'newseq') +
+    item('⬇ Add to Timeline', 'Append to the current sequence', 'add') +
+    '<div style="height:1px;background:var(--border,#2a2a3a);margin:3px 4px;"></div>' +
+    item('✕ Remove from Project', '', 'remove', true);
+
   document.body.appendChild(m);
-  const done = (val) => { m.remove(); if(val) cb(val); };
-  document.getElementById('seqTgtCurrent').onclick = () => done('current');
-  document.getElementById('seqTgtNew').onclick     = () => done('new');
-  document.getElementById('seqTgtCancel').onclick  = () => done(null);
-  m.addEventListener('click', e => { if(e.target === m) done(null); });
+  // Keep the menu on screen
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(ev.clientX, window.innerWidth  - r.width  - 8) + 'px';
+  m.style.top  = Math.min(ev.clientY, window.innerHeight - r.height - 8) + 'px';
+
+  m.querySelectorAll('.pp-ctx-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const act = el.dataset.act;
+      closePpMenu();
+      if(act === 'newseq')      newSequenceFromClip(fileId);
+      else if(act === 'add')    addAudioClip(fileId, -1);   // -1 = append after last clip
+      else if(act === 'remove') ppRemoveFile(fileId);
+    });
+  });
+  setTimeout(() => document.addEventListener('mousedown', _ppMenuOutside, true), 0);
+}
+
+// Premiere's "New Sequence From Clip": makes a new sequence whose canvas matches
+// the clip, then places the clip at the start of it.
+function newSequenceFromClip(fileId) {
+  const pf = projectFiles.find(f => f.id === fileId);
+  if(!pf) { showToast('⚠️ Clip not found'); return; }
+  // Only snapshot/rotate sequences if the current one actually has content
+  if(audioClips && audioClips.length) {
+    createSequence();                       // snapshots current, switches to a blank one
+  } else if(sequences.length === 0) {
+    _ensureSequenceRegistered();
+  }
+  if(pf.isVideo) autoCreateCanvasForVideo(pf);
+  else if(projects.length === 0) autoCreateDefaultCanvas();
+  addAudioClip(fileId, 0);                  // starts at 0 in the fresh timeline
+  showToast('🎞 New sequence from "' + pf.name + '"');
 }
 
 function renderSequenceTabs() {
