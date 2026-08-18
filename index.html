@@ -1237,7 +1237,10 @@ body.razor-tool-active #timelineScroll .tl-audio-clip { cursor: crosshair !impor
 /* Razor preview line */
 #razorPreviewLine {
   position: fixed;          /* fixed to viewport — no scroll math needed */
-  top: 0; bottom: 0;
+  /* top/height are set from the timeline's rect in JS so the line spans ONLY the
+     timeline tracks — it used to be top:0;bottom:0, drawing across the whole UI
+     (over the preview panel and panels). */
+  top: 0; height: 0;
   width: 1px;
   transform: translateX(-50%);  /* center line exactly on cursor hot-spot */
   background: rgba(255,80,80,0.9);
@@ -1247,10 +1250,10 @@ body.razor-tool-active #timelineScroll .tl-audio-clip { cursor: crosshair !impor
   box-shadow: 0 0 0 0.5px rgba(255,80,80,0.4), 0 0 6px rgba(255,80,80,0.5);
 }
 #razorPreviewLine::before {
-  /* Scissors icon — centered ON the line, positioned at track top */
+  /* Scissors icon — centered ON the line, near the top of the timeline */
   content: '✂';
   position: absolute;
-  top: 80px;
+  top: 4px;
   left: 50%;
   transform: translateX(-50%);   /* perfect centering on the line */
   font-size: 14px;
@@ -23875,19 +23878,19 @@ function splitClipAtPlayhead() {
   // For multi-clip, the cut point must be a TIMELINE position (0..totalDur).
   // Map it correctly: for multi-clip, re-derive timeline position from audio.currentTime
   // using the active clip's offset. Razor tool also sets window._virtualT before calling.
+  // The cut point must be a TIMELINE position. Prefer _virtualT (the razor sets it),
+  // otherwise convert the source-file position to timeline space:
+  //     timelineT = clip.timelineStart + (audio.currentTime - clip.trimIn)
+  // The old single-clip branch used audio.currentTime DIRECTLY as a timeline value.
+  // Once a clip was trimmed or dragged those differ, so the cut landed outside the
+  // clip and was rejected with "Cut point must be inside the clip!" — i.e. the
+  // razor stopped working after a manual trim.
   let t;
-  if(audioClips.length > 1) {
-    // Prefer _virtualT if set (razor tool sets it before calling)
-    const vt = window._virtualT || 0;
-    // Verify vt falls inside this clip; if not, compute from audio.currentTime
-    if(vt > clip.timelineStart && vt < clip.timelineEnd) {
-      t = vt;
-    } else {
-      // Compute from audio.currentTime: srcT → timeline position
-      t = clip.timelineStart + (audio.currentTime - (clip.trimIn || 0));
-    }
+  const vt = window._virtualT;
+  if(vt != null && vt > clip.timelineStart && vt < clip.timelineEnd) {
+    t = vt;
   } else {
-    t = audio.currentTime;
+    t = clip.timelineStart + (audio.currentTime - (clip.trimIn || 0));
   }
 
   if(t <= clip.timelineStart + 0.02 || t >= clip.timelineEnd - 0.02) {
@@ -24274,8 +24277,12 @@ document.addEventListener('keydown', ev => {
       return;
     }
 
-    // ── Position line at exact mouse cursor ──
+    // ── Position line at exact mouse cursor, confined to the TIMELINE only ──
+    // (the line is position:fixed, so we clamp its vertical span to the timeline's
+    // rect — otherwise it drew across the entire UI, over the preview panel.)
     line.style.left    = ev.clientX + 'px';
+    line.style.top     = rect.top + 'px';
+    line.style.height  = rect.height + 'px';
     line.style.display = 'block';
 
     // ── Snap indicator: green when cursor is near a clip edge ──
@@ -24322,8 +24329,9 @@ document.addEventListener('keydown', ev => {
         // Map timeline time t → source file time for this clip
         const srcT = (clip.trimIn || 0) + (t - clip.timelineStart);
         audio.currentTime = Math.max(0, srcT);
-        // Also update virtualT so playhead shows correct position
-        if(audioClips.length > 1) window._virtualT = t;
+        // Always publish the timeline position — splitClipAtPlayhead prefers it,
+        // and it's what keeps the cut accurate on trimmed/dragged single clips too.
+        window._virtualT = t;
       }
       splitClipAtPlayhead();
       requestAnimationFrame(_buildGapIndicators);
