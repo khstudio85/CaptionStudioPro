@@ -9791,7 +9791,15 @@ document.addEventListener('click', e => {
   // Also protect any element with class cc-pane, cc-tab, ctrl-*, panel-*
   const safeClasses = ['cc-pane','cc-tab','ctrl-row','style-row','anim-card',
     'tp-row','tp-label','anim-apply-row','cc-anim-card','cl-item',
-    'sel-info-badge','tl-sel-btn','tl-info-row'];
+    'sel-info-badge','tl-sel-btn','tl-info-row',
+    // ── Selectable timeline items ──
+    // Clicking a CLIP used to fall through to the deselect below, wiping the
+    // selection that mousedown had just made. That's why a clip only stayed
+    // selected while the mouse button was held, and Delete did nothing after
+    // releasing it. Clicking these must never deselect.
+    'tl-audio-clip','tl-audio-linked-shadow','clip-trim-handle',
+    'tl-group-block','tl-handle','tl-ai-marker','tl-gap-indicator',
+    'pp-file-item','pp-seq-item','sc-det'];
   for(const cls of safeClasses) {
     if(e.target.closest('.' + cls)) return;
   }
