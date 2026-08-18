@@ -8481,32 +8481,34 @@ function onTimeUpdate() {
   // Single-clip: keep _virtualT in sync too (for consistency when switching modes)
   if(audioClips.length <= 1) window._virtualT = tDisplay;
 
-  // ── Single-clip: Premiere Pro style trim bounds ──
-  if(audioClips.length <= 1) {
-    const effEnd = window._mediaEffectiveEnd;
-    if(!audio.paused && window._trimEndEnforced && effEnd != null && rawT >= effEnd) {
-      audio.pause();
-      window._isAudioPaused = true;
-      const btn = document.getElementById('playBtn');
-      if(btn) { btn.innerHTML = '▶'; btn.style.boxShadow = '0 0 16px rgba(108,71,255,0.5), 0 2px 8px rgba(0,0,0,0.4)'; }
-      cancelAnimationFrame(animFrame);
-    }
-    if(!audio.paused && selectedClipId) {
-      const activeClip = audioClips.find(c => c.id === selectedClipId);
-      // Compare in SOURCE time: source = effStart + timelineT (was comparing raw
-      // source time against a timeline value, which mis-stopped trimmed clips).
-      const _srcEnd = activeClip
-        ? (window._mediaEffectiveStart || 0) + activeClip.timelineEnd
-        : null;
-      if(activeClip && activeClip._trimmedRight && _srcEnd != null && rawT >= _srcEnd - 0.02) {
+  // ── Single-clip: enforce the clip's trim bounds (Premiere style) ──
+  // Derived from the CLIP ITSELF, unconditionally. The old checks were gated on
+  // window._trimEndEnforced / selectedClipId / clip._trimmedRight, all of which
+  // are false for most trim routes (Right Cut, W key, ripple trim, or after
+  // deselecting) — so playback ran straight past the end of the trimmed clip and
+  // kept showing/playing the removed tail.
+  if(audioClips.length === 1) {
+    const c = audioClips[0];
+    const effStart = window._mediaEffectiveStart || 0;
+    const srcLow   = effStart + (c.timelineStart || 0);   // source time of clip start
+    const srcEnd   = effStart + c.timelineEnd;            // source time of clip end
+    if(!audio.paused) {
+      if(rawT >= srcEnd - 0.02) {
+        // Reached the end of the kept region → stop exactly there
         audio.pause();
-        audio.currentTime = _srcEnd;
+        try { audio.currentTime = srcEnd; } catch(_) {}
         window._isAudioPaused = true;
-        const btn2 = document.getElementById('playBtn');
-        if(btn2) { btn2.innerHTML = '▶'; btn2.style.boxShadow = '0 0 16px rgba(108,71,255,0.5), 0 2px 8px rgba(0,0,0,0.4)'; }
+        const btn = document.getElementById('playBtn');
+        if(btn) { btn.innerHTML = '▶'; btn.style.boxShadow = '0 0 16px rgba(108,71,255,0.5), 0 2px 8px rgba(0,0,0,0.4)'; }
         cancelAnimationFrame(animFrame);
+      } else if(rawT < srcLow - 0.05) {
+        // Playing inside the trimmed-off head → skip to the kept region
+        try { audio.currentTime = srcLow; } catch(_) {}
       }
     }
+  } else if(audioClips.length === 0) {
+    // No clips at all — nothing should be playing
+    if(!audio.paused) { audio.pause(); window._isAudioPaused = true; }
   }
 
   // ── UI: preview progress bar + time label (use real content duration) ──
