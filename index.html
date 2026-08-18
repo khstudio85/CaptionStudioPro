@@ -17361,6 +17361,10 @@ document.addEventListener('keydown', e => {
 
     // Delete / Backspace = delete selected layers
     case 'Delete': case 'Backspace':
+      // A selected TIMELINE CLIP wins — let the clip-delete handler take it.
+      // Otherwise a lingering word selection (selectedGi/selectedWi from clicking
+      // a caption earlier) swallowed Delete and removed a word instead of the clip.
+      if(typeof selectedClipIds !== 'undefined' && selectedClipIds && selectedClipIds.size > 0) break;
       if(selectedLayerIds.size > 0) {
         e.preventDefault();
         deleteSelectedLayers();
@@ -23355,13 +23359,15 @@ function selectClip(clipId, opts = {}) {
   primarySelectedClipId = primaryId;
   selectedClipId = primaryId;
 
-  // Selecting a clip is exclusive from caption-layer selection. The Delete-key
-  // handler bails when caption layers are selected, which was blocking clip
-  // deletion — clear them so Delete removes the selected clip.
+  // Selecting a clip is exclusive from caption selection. Both the caption-layer
+  // selection AND a lingering word selection (selectedGi/selectedWi) made the
+  // Delete key act on captions instead of the clip — clear them here.
   if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.size) {
     selectedLayerIds.clear();
     if(typeof updateLayerSelectionUI === 'function') updateLayerSelectionUI();
   }
+  if(typeof selectedGi !== 'undefined') selectedGi = -1;
+  if(typeof selectedWi !== 'undefined') selectedWi = -1;
 
   if(!silent) {
     // Only update the selection highlight — do NOT rebuild the whole clip track.
