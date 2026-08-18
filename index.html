@@ -21574,29 +21574,14 @@ async function addProjectFilesAndAutoTimeline(files) {
   }
 
   renderProjectPanel();
-  showToast('✅ ' + files.length + ' file' + (files.length > 1 ? 's' : '') + ' imported!');
   _updateEditBtnStates();
 
-  // ── Now auto-place each file on timeline ──
-  const firstPf = projectFiles.find(f => f.id === addedFileIds[0]);
-  if(!firstPf) return;
-
-  // Auto-create canvas if none exists
-  if(projects.length === 0) {
-    if(firstPf.isVideo) {
-      autoCreateCanvasForVideo(firstPf);
-    } else {
-      autoCreateDefaultCanvas();
-    }
-  }
-
-  // Auto-place each file on timeline sequentially (after last clip)
-  for(const fileId of addedFileIds) {
-    addAudioClip(fileId, -1); // -1 = append after last clip
-    await new Promise(r => setTimeout(r, 100));
-  }
-
-  showToast('🎬 ' + addedFileIds.length + ' file' + (addedFileIds.length > 1 ? 's' : '') + ' added to timeline!');
+  // ── Import stops here ──
+  // Files land in the Project Panel ONLY. They are never auto-placed on the
+  // timeline: the user drags media onto the timeline themselves (or double-clicks
+  // it in the panel), which is also what creates/targets the sequence.
+  showToast('✅ ' + files.length + ' file' + (files.length > 1 ? 's' : '') +
+            ' imported — drag onto the timeline to use');
 }
 
 
