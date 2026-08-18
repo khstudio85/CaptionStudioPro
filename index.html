@@ -23823,9 +23823,13 @@ window.buildTimeline = function() {
     if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if(e.target.isContentEditable) return;
     
-    // Skip if caption layers are selected (they have their own delete handler)
-    if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds.size > 0) return;
-    
+    // Caption layers have their own delete handler — but only defer to it when NO
+    // timeline clip is selected. A stale caption-layer selection used to block clip
+    // deletion entirely ("can't delete any clip").
+    const _clipSelected = (typeof selectedClipIds !== 'undefined' && selectedClipIds && selectedClipIds.size > 0)
+                          || (typeof selectedClipId !== 'undefined' && selectedClipId != null);
+    if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds.size > 0 && !_clipSelected) return;
+
     // Delete selected clip(s) — supports multi-selection
     if(selectedClipIds && selectedClipIds.size > 0) {
       e.preventDefault();
@@ -23873,6 +23877,39 @@ window.buildTimeline = function() {
     }
   });
 })();
+// ── Ctrl/Cmd+A → select ALL clips on the timeline ──
+// After several razor cuts the clips fill the whole track, leaving no empty space
+// to start a marquee drag from — so rubber-band multi-select becomes impossible.
+// This (plus Ctrl+click to toggle individual clips) is the reliable way to
+// multi-select. Shift+click still range-selects.
+function selectAllClips() {
+  if(!audioClips || !audioClips.length) { showToast('⚠️ No clips on the timeline'); return; }
+  selectedClipIds = new Set(audioClips.map(c => c.id));
+  const last = audioClips.slice().sort((a,b) => a.timelineStart - b.timelineStart).pop();
+  primarySelectedClipId = last ? last.id : null;
+  selectedClipId = primarySelectedClipId;
+  // Clip selection is exclusive from caption selection (keeps Delete unambiguous)
+  if(typeof selectedLayerIds !== 'undefined' && selectedLayerIds && selectedLayerIds.size) {
+    selectedLayerIds.clear();
+    if(typeof updateLayerSelectionUI === 'function') updateLayerSelectionUI();
+  }
+  if(typeof selectedGi !== 'undefined') selectedGi = -1;
+  if(typeof selectedWi !== 'undefined') selectedWi = -1;
+  if(typeof updateClipSelectionUI === 'function') updateClipSelectionUI();
+  if(typeof updateAutoCapBtnState === 'function') updateAutoCapBtnState();
+  if(typeof _updateEditBtnStates === 'function') _updateEditBtnStates();
+  showToast('▣ All ' + selectedClipIds.size + ' clips selected');
+}
+
+document.addEventListener('keydown', e => {
+  if(!(e.ctrlKey || e.metaKey) || e.code !== 'KeyA') return;
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  if(tag === 'INPUT' || tag === 'TEXTAREA' ||
+     (document.activeElement && document.activeElement.isContentEditable)) return;
+  e.preventDefault();
+  selectAllClips();
+});
+
 /* ── Split clip at playhead + split captions ── */
 function splitClipAtPlayhead() {
   if(!selectedClipId || !audio) { showToast('⚠️ Select a clip first!'); return; }
@@ -24348,7 +24385,10 @@ document.addEventListener('keydown', ev => {
       // Return to the Select tool after cutting. While the razor stays active,
       // clip mousedown handlers bail out (`if(_razorToolActive) return`), so the
       // user couldn't select/delete any of the pieces they just created.
-      if(typeof toggleRazorTool === 'function') toggleRazorTool(true);
+      // Use activateSelectTool() (not just toggleRazorTool(true)) so _selectToolActive
+      // and body.select-tool-active are restored — otherwise no tool is really active.
+      if(typeof activateSelectTool === 'function') activateSelectTool();
+      else if(typeof toggleRazorTool === 'function') toggleRazorTool(true);
       requestAnimationFrame(_buildGapIndicators);
       return;
     }
