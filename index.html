@@ -4425,6 +4425,35 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
   cursor: grab; transition: all 0.15s; position: relative;
   user-select: none;
 }
+/* ── Project panel section labels (Media / Sequences) ── */
+.pp-section-label {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px 4px; margin-top: 2px;
+  font-size: 9px; font-weight: 800; letter-spacing: 0.8px; text-transform: uppercase;
+  color: var(--text3); background: rgba(255,255,255,0.02);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.pp-seq-add {
+  background: rgba(108,71,255,0.15); border: 1px solid rgba(108,71,255,0.4);
+  color: var(--accent2); border-radius: 4px; cursor: pointer;
+  font-size: 11px; font-weight: 900; line-height: 1; padding: 1px 6px;
+}
+.pp-seq-add:hover { background: rgba(108,71,255,0.3); }
+.pp-seq-list { overflow-y: auto; max-height: 30%; flex-shrink: 0; padding: 4px 6px; }
+.pp-seq-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 8px; margin-bottom: 4px; border-radius: 6px;
+  background: var(--bg3); border: 1.5px solid var(--border);
+  cursor: pointer; transition: all .12s;
+}
+.pp-seq-item:hover { border-color: var(--accent2); background: rgba(108,71,255,0.07); }
+.pp-seq-item.active { border-color: var(--accent); background: rgba(108,71,255,0.16); }
+.pp-seq-name { flex: 1; min-width: 0; font-size: 11px; font-weight: 700; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-seq-meta { font-size: 8.5px; color: var(--text3); }
+.pp-seq-rm { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.pp-seq-rm:hover { color: var(--red, #ff4d6d); }
 .pp-file-item:hover { border-color: var(--accent2); background: rgba(108,71,255,0.07); }
 .pp-file-item.pf-dragging { opacity: 0.45; border-style: dashed; }
 .pp-file-item.pf-used { border-color: rgba(0,229,160,0.4); }
@@ -5556,10 +5585,24 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
       <div style="font-size:9px;margin-top:3px;color:var(--text3);">MP4 · MOV · MKV · WebM · MP3 · WAV · M4A</div>
     </div>
 
+    <!-- ══ SECTION: MEDIA (imported video / audio) ══ -->
+    <div class="pp-section-label">🎬 Video &amp; Audio</div>
+
     <!-- Imported files list -->
     <div class="pp-files-list" id="ppFilesList">
       <div class="pp-empty-msg" id="ppEmptyMsg">
         Import audio files above<br>then drag to timeline 🎬
+      </div>
+    </div>
+
+    <!-- ══ SECTION: SEQUENCES ══ -->
+    <div class="pp-section-label" id="ppSeqLabel">
+      <span>🎞 Sequences</span>
+      <button class="pp-seq-add" onclick="createSequence()" title="New empty sequence">＋</button>
+    </div>
+    <div class="pp-seq-list" id="ppSeqList">
+      <div class="pp-empty-msg" id="ppSeqEmpty">
+        Drop a video on the timeline —<br>a matching sequence is created 🎞
       </div>
     </div>
 
@@ -21648,6 +21691,9 @@ function autoCreateCanvasForVideo(pf) {
 }
 
 function renderProjectPanel() {
+  // Keep the Sequences section in sync with the media list
+  if(typeof renderSequencesPanel === 'function') renderSequencesPanel();
+
   const list  = document.getElementById('ppFilesList');
   const empty = document.getElementById('ppEmptyMsg');
   if(!list) return;
@@ -21979,6 +22025,7 @@ function clipDropOnTimeline(e) {
 
   if(projects.length === 0) {
     if(pf.isVideo) {
+      // First video → auto-create a sequence matching the footage resolution
       autoCreateCanvasForVideo(pf);
       addAudioClip(fileId, dropTime);
       return;
@@ -21989,7 +22036,17 @@ function clipDropOnTimeline(e) {
     return;
   }
 
-  addAudioClip(fileId, dropTime);
+  // A sequence already has clips → let the user choose: append here, or start a
+  // new sequence (canvas matched to this video) for separate captions.
+  askSequenceTarget(pf, (target) => {
+    if(target === 'new') {
+      createSequence();                       // blank sequence + snapshot of the old one
+      if(pf.isVideo) autoCreateCanvasForVideo(pf);
+      addAudioClip(fileId, 0);                // starts at 0 in the fresh timeline
+    } else {
+      addAudioClip(fileId, dropTime);
+    }
+  });
 }
 
 function getTimelineDuration() {
@@ -22124,6 +22181,10 @@ function addAudioClip(fileId, timelineStart) {
   renderProjectPanel();
   buildAudioClipTrack();
   buildTimeline(); // re-render so timeline extends to new clip
+
+  // Media is on the timeline → make sure this is a registered sequence so it
+  // appears under the Sequences label in the Project Panel.
+  if(typeof _ensureSequenceRegistered === 'function') _ensureSequenceRegistered();
 
   // ══════════════════════════════════════════════════════════════════
   // AUTO-ZOOM: Clip fills 50% viewport, leaving 50% empty for next clip drop
@@ -26055,7 +26116,103 @@ function deleteSequence(id) {
   renderSequenceTabs();
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Register the CURRENT working state as a sequence the first time media
+// lands on the timeline, so it shows up under the Sequences label with a
+// name that reflects its canvas (e.g. "Sequence 1 · 1080×1920").
+// ─────────────────────────────────────────────────────────────────
+function _ensureSequenceRegistered() {
+  if(sequences.length === 0) {
+    const proj = (typeof projects !== 'undefined') ? projects.find(p => p.id === activeProjectId) : null;
+    const res  = proj && proj.res ? proj.res.replace('x', '×') : '';
+    const s1 = { id: ++_seqCounter, name: 'Sequence 1' + (res ? ' · ' + res : ''), state: null };
+    sequences.push(s1);
+    activeSequenceId = s1.id;
+  }
+  // Keep the active sequence's snapshot fresh so switching away/back is lossless
+  const cur = sequences.find(s => s.id === activeSequenceId);
+  if(cur) cur.state = _captureSequenceState();
+  renderSequenceTabs();
+  if(typeof renderSequencesPanel === 'function') renderSequencesPanel();
+}
+
+// ── Sequences list in the Project Panel ──
+function renderSequencesPanel() {
+  const list  = document.getElementById('ppSeqList');
+  const empty = document.getElementById('ppSeqEmpty');
+  if(!list) return;
+  if(!sequences.length) {
+    list.innerHTML = '<div class="pp-empty-msg" id="ppSeqEmpty">' +
+      'Drop a video on the timeline —<br>a matching sequence is created 🎞</div>';
+    return;
+  }
+  if(empty) empty.style.display = 'none';
+  list.innerHTML = sequences.map(s => {
+    const isActive = s.id === activeSequenceId;
+    // Clip/caption counts: live values for the active one, snapshot for the rest
+    const st = isActive ? null : (s.state || {});
+    const clipCount = isActive ? (audioClips ? audioClips.length : 0) : ((st.audioClips || []).length);
+    const capCount  = isActive ? (wordGroups ? wordGroups.length : 0) : ((st.wordGroups || []).length);
+    return '<div class="pp-seq-item' + (isActive ? ' active' : '') + '" data-sid="' + s.id + '"' +
+      ' onclick="switchSequence(' + s.id + ')" ondblclick="renameSequence(' + s.id + ')"' +
+      ' title="Click = open · Double-click = rename">' +
+      '<span style="font-size:12px;">🎞</span>' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div class="pp-seq-name">' + _seqEsc(s.name) + '</div>' +
+        '<div class="pp-seq-meta">' + clipCount + ' clip' + (clipCount===1?'':'s') +
+          ' · ' + capCount + ' caption' + (capCount===1?'':'s') + '</div>' +
+      '</div>' +
+      '<button class="pp-seq-rm" onclick="event.stopPropagation();deleteSequence(' + s.id + ')" title="Delete sequence">✕</button>' +
+    '</div>';
+  }).join('');
+}
+
+// ─────────────────────────────────────────────────────────────────
+// When media is dropped and a sequence ALREADY has clips, ask whether to
+// append it to the current sequence or start a new one.
+// cb(target) → 'current' | 'new'   (never called if cancelled)
+// ─────────────────────────────────────────────────────────────────
+function askSequenceTarget(pf, cb) {
+  const hasContent = sequences.length > 0 && audioClips && audioClips.length > 0;
+  if(!hasContent) { cb('current'); return; }
+
+  const cur = sequences.find(s => s.id === activeSequenceId);
+  const old = document.getElementById('seqTargetModal');
+  if(old) old.remove();
+
+  const m = document.createElement('div');
+  m.id = 'seqTargetModal';
+  m.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,0.8);' +
+    'backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;';
+  m.innerHTML =
+    '<div style="background:linear-gradient(135deg,#1a1a24,#12121a);border:1px solid rgba(108,71,255,0.35);' +
+      'border-radius:14px;padding:22px 24px;width:420px;max-width:92vw;box-shadow:0 24px 70px rgba(0,0,0,0.75);">' +
+      '<div style="font-size:16px;font-weight:900;color:#fff;margin-bottom:6px;">Where should this clip go?</div>' +
+      '<div style="font-size:12px;color:#9aa;margin-bottom:18px;">' + _seqEsc(pf && pf.name ? pf.name : 'Clip') + '</div>' +
+      '<button id="seqTgtCurrent" style="width:100%;padding:12px;border-radius:9px;border:none;margin-bottom:9px;' +
+        'background:linear-gradient(135deg,#6c47ff,#9d7eff);color:#fff;font-size:13px;font-weight:800;cursor:pointer;text-align:left;">' +
+        '⬇ Add to “' + _seqEsc(cur ? cur.name : 'current sequence') + '”' +
+        '<div style="font-size:10.5px;font-weight:600;opacity:.85;margin-top:2px;">Appends after the existing clips — caption it next to the old ones</div>' +
+      '</button>' +
+      '<button id="seqTgtNew" style="width:100%;padding:12px;border-radius:9px;margin-bottom:14px;' +
+        'background:var(--bg3,#1c1c26);color:#fff;border:1px solid rgba(255,255,255,0.14);font-size:13px;font-weight:800;cursor:pointer;text-align:left;">' +
+        '＋ Create a new sequence' +
+        '<div style="font-size:10.5px;font-weight:600;opacity:.7;margin-top:2px;">Fresh timeline &amp; captions, canvas matched to this video</div>' +
+      '</button>' +
+      '<button id="seqTgtCancel" style="width:100%;padding:9px;border-radius:8px;background:transparent;' +
+        'color:#889;border:1px solid rgba(255,255,255,0.12);font-size:12px;font-weight:600;cursor:pointer;">Cancel</button>' +
+    '</div>';
+  document.body.appendChild(m);
+  const done = (val) => { m.remove(); if(val) cb(val); };
+  document.getElementById('seqTgtCurrent').onclick = () => done('current');
+  document.getElementById('seqTgtNew').onclick     = () => done('new');
+  document.getElementById('seqTgtCancel').onclick  = () => done(null);
+  m.addEventListener('click', e => { if(e.target === m) done(null); });
+}
+
 function renderSequenceTabs() {
+  // The Project Panel's Sequences list mirrors the tab bar — keep them together
+  if(typeof renderSequencesPanel === 'function') renderSequencesPanel();
   const bar = document.getElementById('seqTabBar');
   if(!bar) return;
   if(sequences.length <= 1) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
