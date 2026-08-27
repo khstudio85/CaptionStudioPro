@@ -188,6 +188,16 @@ function _writeIndex(idx) {
 }
 
 // List project METADATA only (fast — the dashboard never loads full projects)
+// Write a text file to a user-chosen path (used by "Save Project As…" so the
+// .csp copy lands in the directory the user picked in the save dialog).
+ipcMain.handle('write-text-file', async (event, { filePath, contents }) => {
+  try {
+    if(!filePath) return { success: false, error: 'No path' };
+    fs.writeFileSync(filePath, contents, 'utf8');
+    return { success: true, filePath };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
 ipcMain.handle('projects-list', async () => {
   try { return { success: true, projects: _readIndex().projects }; }
   catch(e) { return { success: false, error: e.message, projects: [] }; }

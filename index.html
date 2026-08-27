@@ -5560,7 +5560,7 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 
   <!-- Project Save / Load -->
   <div style="display:flex;gap:5px;margin-left:10px;">
-    <button class="tb-btn" onclick="ProjectManager.save({})" title="Save project (Ctrl+S) — stays in My Projects" style="background:linear-gradient(135deg,#1a3a2a,#1e4a34);border-color:rgba(0,229,160,0.35);color:#00e5a0;font-weight:700;gap:4px;display:flex;align-items:center;">
+    <button class="tb-btn" onclick="ProjectManager.saveAs()" title="Save Project — choose a name and folder (Ctrl+S = quick save)" style="background:linear-gradient(135deg,#1a3a2a,#1e4a34);border-color:rgba(0,229,160,0.35);color:#00e5a0;font-weight:700;gap:4px;display:flex;align-items:center;">
       💾 Save
     </button>
     <button class="tb-btn" onclick="openProjectsDashboard()" title="My Projects — open, rename, duplicate, delete" style="border-color:rgba(108,71,255,0.35);color:var(--accent2);gap:4px;display:flex;align-items:center;font-weight:700;">
@@ -20266,7 +20266,9 @@ async function _restoreProjectFiles(files) {
   if(typeof renderProjectPanel === 'function') renderProjectPanel();
 
   // Re-establish the preview video/audio for the first clip on the timeline
-  _restorePreviewFromClips();
+  await _restorePreviewFromClips();
+  // Any file that still has no URL needs relinking — tell the user up front
+  if(typeof _checkMissingMedia === 'function') _checkMissingMedia();
 
   // Re-extract each file's waveform natively (async — track refreshes as they arrive)
   projectFiles.forEach(pf => {
@@ -20285,7 +20287,7 @@ async function _restoreProjectFiles(files) {
 }
 
 // Create the preview <video>/<audio> element from the first clip's restored URL.
-function _restorePreviewFromClips() {
+async function _restorePreviewFromClips() {
   if(!audioClips || !audioClips.length) return;
   const sorted = audioClips.slice().sort((a, b) => a.timelineStart - b.timelineStart);
   const vt = window._virtualT || 0;
@@ -20293,9 +20295,22 @@ function _restorePreviewFromClips() {
   const clip = sorted.find(c => vt >= c.timelineStart && vt < c.timelineEnd) ||
                sorted.find(c => c.id === (typeof _activePreviewClipId !== 'undefined' ? _activePreviewClipId : null)) ||
                sorted[0];
-  if(!clip) return;
+  if(!clip) { console.warn('[Restore] no clip to preview'); return; }
   const pf = projectFiles.find(f => f.id === clip.fileId);
-  if(!pf || !pf.url) return;
+  if(!pf) { console.warn('[Restore] clip', clip.id, 'references missing file', clip.fileId); return; }
+
+  // The URL may not be resolved yet (e.g. the project was saved before paths were
+  // captured, or _restoreProjectFiles ran before this). Try to resolve it HERE
+  // instead of silently bailing out — that silent return is why the timeline had
+  // clips but the preview stayed black.
+  if(!pf.url && pf.path && window.electronAPI && window.electronAPI.getFileURL) {
+    try { pf.url = await window.electronAPI.getFileURL(pf.path); } catch(_) {}
+  }
+  if(!pf.url) {
+    console.warn('[Restore] no playable URL for "' + pf.name + '" (path: ' + (pf.path || 'none') + ') — needs relink');
+    if(typeof _checkMissingMedia === 'function') _checkMissingMedia();
+    return;
+  }
   const seekSrc = (clip.trimIn || 0) + Math.max(0, vt - clip.timelineStart);
 
   const old = document.getElementById('previewVideoEl'); if(old) old.remove();
@@ -20305,11 +20320,22 @@ function _restorePreviewFromClips() {
   if(isVideo) {
     const v = document.createElement('video');
     v.id = 'previewVideoEl'; v.src = pf.url; v.preload = 'auto'; v.playsInline = true;
+    v.muted = false;
     v.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;z-index:1;display:block;';
+    // Surface load failures instead of leaving a black preview
+    v.addEventListener('error', () => {
+      const code = v.error ? v.error.code : '?';
+      console.error('[Restore] video failed to load (code ' + code + '):', pf.url);
+      if(typeof showToast === 'function') showToast('⚠️ Could not play "' + pf.name + '" — use Relink Media');
+      if(typeof _checkMissingMedia === 'function') _checkMissingMedia();
+    });
     if(pw) pw.insertBefore(v, pw.firstChild);
+    try { v.load(); } catch(_) {}      // force the fetch for file:// sources
     const bg = document.getElementById('previewBg'); if(bg) bg.style.display = 'none';
     const tag = document.getElementById('videoModeTag'); if(tag) tag.style.display = 'block';
+    const hint0 = document.getElementById('previewHint'); if(hint0) hint0.style.display = 'none';
     audio = v; window._isVideoMode = true;
+    console.log('[Restore] preview video attached:', pf.name);
   } else {
     audio = new Audio(pf.url); window._isVideoMode = false;
   }
@@ -28232,10 +28258,16 @@ const ProjectManager = (function() {
     const dur  = (typeof getContentDur === 'function') ? getContentDur() : 0;
     const now  = Date.now();
     const prevThumb = current && current.thumb;
+    // Auto-name from the media once it's imported, so autosaved projects don't all
+    // sit in the dashboard as "Untitled Project".
+    const mediaName = pf && pf.name ? pf.name.replace(/\.[^.]+$/, '') : '';
+    const keptName = (current && current.name && current.name !== 'Untitled Project')
+      ? current.name
+      : (mediaName || (current && current.name) || 'Untitled Project');
     return {
       schema: SCHEMA,
       id: current ? current.id : newId(),
-      name: (current && current.name) || (pf && pf.name ? pf.name.replace(/\.[^.]+$/, '') : 'Untitled Project'),
+      name: keptName,
       created: (current && current.created) || now,
       lastModified: now,
       duration: dur || 0,
@@ -28347,6 +28379,53 @@ const ProjectManager = (function() {
     if(typeof renderSequenceTabs === 'function') renderSequenceTabs();
   }
 
+  // ── Save As… : ask for the project NAME and the DIRECTORY ──
+  // Uses the native save dialog (that's the name + folder picker), writes a .csp
+  // copy there, and stores/updates the project in the dashboard under that name.
+  async function saveAs() {
+    const a = api();
+    if(!a) { showToast('⚠️ Project store unavailable'); return { success:false }; }
+    if(!audioClips || !audioClips.length) { showToast('⚠️ Nothing to save yet'); return { success:false }; }
+
+    const suggested = ((current && current.name) ||
+      (window._audioFileName || 'project').replace(/\.[^.]+$/, '')) + '.csp';
+    let chosen = null;
+    try {
+      const res = await window.electronAPI.saveFileDialog({
+        title: 'Save Project — choose a name and folder',
+        defaultPath: suggested,
+        filters: [{ name: 'Caption Studio Project', extensions: ['csp'] }]
+      });
+      if(!res || res.canceled || !res.filePath) return { success:false, canceled:true };
+      chosen = res.filePath;
+    } catch(e) { showToast('❌ Save dialog failed'); return { success:false }; }
+
+    // Project name = the filename the user typed
+    const base = String(chosen).replace(/\\/g, '/').split('/').pop().replace(/\.csp$/i, '');
+    if(!current) current = { schema: SCHEMA, id: newId(), created: Date.now() };
+    current.name = base || current.name || 'Untitled Project';
+
+    status('Saving…');
+    const meta = buildMeta();
+    const data = JSON.stringify(collectProjectData());
+
+    // 1. the dashboard/store copy (this is what "Open project" resumes from)
+    const stored = await a.projectsSave({ meta, data });
+    // 2. the portable .csp copy in the folder the user chose
+    let wrote = { success: true };
+    if(window.electronAPI.writeTextFile) {
+      wrote = await window.electronAPI.writeTextFile({
+        filePath: chosen, contents: JSON.stringify({ meta, data: JSON.parse(data) }, null, 2)
+      });
+    }
+    if(stored && stored.success) { current = meta; dirty = false; status('Saved', 'saved'); }
+    else status('Save failed', '');
+    showToast(wrote.success
+      ? '✅ Saved "' + current.name + '"\n' + chosen
+      : '⚠️ Saved to My Projects, but writing the file failed: ' + wrote.error);
+    return stored;
+  }
+
   async function rename(id, name) {
     const a = api(); if(!a || !name) return;
     const res = await a.projectsRename({ id, name });
@@ -28377,7 +28456,7 @@ const ProjectManager = (function() {
   return {
     get current() { return current; },
     get isDirty() { return dirty; },
-    save, markDirty, list, open, createProject, rename, duplicate, remove, status,
+    save, saveAs, markDirty, list, open, createProject, rename, duplicate, remove, status,
     saveProject: save, autoSaveProject: markDirty, loadProject: open,
     getProjects: list, renameProject: rename, duplicateProject: duplicate, deleteProject: remove,
   };

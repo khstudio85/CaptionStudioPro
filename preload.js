@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   projectsRename:    (payload) => ipcRenderer.invoke('projects-rename', payload),
   projectsDuplicate: (payload) => ipcRenderer.invoke('projects-duplicate', payload),
   projectsDelete:    (id) => ipcRenderer.invoke('projects-delete', id),
+  writeTextFile:     (payload) => ipcRenderer.invoke('write-text-file', payload),
   
   // NEW: Frame-based export (CapCut style)
   exportFramesMode: (options) => ipcRenderer.invoke('export-frames-mode', options),
