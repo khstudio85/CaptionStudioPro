@@ -46,6 +46,29 @@
       ctx.letterSpacing = ((spec.letterSpacing || 0) * (scale || 1)) + 'px';
     }
   }
+
+  // CSS cubic-bezier(x1,y1,x2,y2) evaluator, so canvas animations use the SAME
+  // timing curve the preview's CSS keyframes use (Newton-Raphson on x, then y).
+  function cubicBezier(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const sampleX = t => ((ax * t + bx) * t + cx) * t;
+    const sampleY = t => ((ay * t + by) * t + cy) * t;
+    const slopeX  = t => (3 * ax * t + 2 * bx) * t + cx;
+    return function(x) {
+      if(x <= 0) return 0;
+      if(x >= 1) return 1;
+      let t = x;
+      for(let i = 0; i < 8; i++) {
+        const err = sampleX(t) - x;
+        if(Math.abs(err) < 1e-6) break;
+        const d = slopeX(t);
+        if(Math.abs(d) < 1e-6) break;
+        t -= err / d;
+      }
+      return sampleY(t);
+    };
+  }
   
   // ═══════════════════════════════════════════
   // 1. CAPTION STYLE SPECIFICATION
@@ -421,47 +444,66 @@
       const padV = props.padV || 5;
       const radius = props.barRadius || 7;
       const bgOp = (props.bgOpacity != null ? props.bgOpacity : 100) / 100;
-      // DOM keeps the active word scaled at hlScale (not 1.0) for the whole
-      // active duration, with the bar popping to bounceScale. Match that: the
-      // active word settles to hlScale and peaks at bounceScale.
-      const hlScale = spec.highlightScale || 1;
-      const peakScale = Math.max(bounceScale, hlScale);
+
+      // ── Match the DOM preview EXACTLY (renderStyle7 in index.html) ──
+      // There, two separate things happen to an active word:
+      //   1. the CHIP (word + bar) gets a STATIC transform: scale(hlScale/100)
+      //      — the "Active Words Highlights → Scale" value. It is NOT animated.
+      //   2. the BAR (a child span) runs the bounce keyframes:
+      //        0% → 1.0 · delayPct% → 1.0 · peakPct% → bounceScale · 100% → 1.0
+      //      over the word's duration, eased with the style's cubic-bezier.
+      // The export used to bounce the WORD itself (and never the bar), which is
+      // why exported words scaled up while the preview only popped the bar.
+      const hlScale = spec.highlightScale || 1;   // static word scale
+      const b1x = props.bez1x != null ? props.bez1x : 0.25;
+      const b1y = props.bez1y != null ? props.bez1y : 1.0;
+      const b2x = props.bez2x != null ? props.bez2x : 0.5;
+      const b2y = props.bez2y != null ? props.bez2y : 1.0;
+      const ease = cubicBezier(b1x, b1y, b2x, b2y);
 
       return {
         words: group.words.map((_, i) => {
           const isActive = i === activeIdx && spec.highlightEnabled;
-          let scale = 1;
-          let barVisible = false;
-
-          if(isActive) {
-            const wt = group.wordTimes[i];
-            const wordDur = wt.end - wt.start;
-            const localTime = currentTime - wt.start;
-            const peakTime = wordDur * 0.35;
-
-            if(localTime < peakTime) {
-              const t = localTime / peakTime;
-              scale = hlScale + (peakScale - hlScale) * this.easeOutBack(t);
-            } else {
-              const t = (localTime - peakTime) / (wordDur - peakTime);
-              scale = peakScale - (peakScale - hlScale) * this.easeInOut(t);
-            }
-            barVisible = true;
+          if(!isActive) {
+            return {
+              opacity: 1, scale: 1, x: 0, y: 0,
+              color: spec.color, bgColor: null, highlighted: false, wordBar: null
+            };
           }
-          
+
+          // Bar bounce, evaluated from the frame timestamp (deterministic)
+          const wt = group.wordTimes[i] || { start: currentTime, end: currentTime + 0.4 };
+          const wordDurMs  = Math.max(120, Math.round((wt.end - wt.start) * 1000));
+          const startDelay = Math.min(props.startDelay != null ? props.startDelay : 50, wordDurMs * 0.35);
+          const delayPct   = +(startDelay / wordDurMs * 100).toFixed(1);
+          const peakPct    = Math.max(delayPct + 8,
+                              Math.min(props.bouncePeakAt != null ? props.bouncePeakAt : 70, 78));
+          // CSS animations run once with `forwards`, so clamp past 100%
+          const pct = Math.max(0, Math.min(100, ((currentTime - wt.start) * 1000 / wordDurMs) * 100));
+
+          let barScale;
+          if(pct <= delayPct) {
+            barScale = 1;                                        // pre-delay hold
+          } else if(pct <= peakPct) {
+            const seg = (peakPct - delayPct) > 0 ? (pct - delayPct) / (peakPct - delayPct) : 1;
+            barScale = 1 + (bounceScale - 1) * ease(seg);         // rise to the bounce
+          } else {
+            const seg = (100 - peakPct) > 0 ? (pct - peakPct) / (100 - peakPct) : 1;
+            barScale = bounceScale + (1 - bounceScale) * ease(seg); // settle back to 1
+          }
+
           return {
             opacity: 1,
-            scale,
+            scale: hlScale,          // STATIC — same as the DOM chip transform
             x: 0, y: 0,
-            color: isActive ? spec.highlightTextColor : spec.color,
+            color: spec.highlightTextColor,
             bgColor: null,
-            highlighted: isActive,
-            wordBar: barVisible ? {
+            highlighted: true,
+            wordBar: {
               color: this.hexAlpha(spec.highlightBgColor, bgOp),
-              radius,
-              padH,
-              padV
-            } : null
+              radius, padH, padV,
+              scale: barScale        // ONLY the bar animates
+            }
           };
         }),
         containerOpacity: 1
@@ -1052,9 +1094,15 @@
           const padV = (ws.wordBar.padV || 0) * scale;
           const bw = pw.width + padH*2;
           const bh = fontPx + padV*2;
+          const barScale = (ws.wordBar.scale == null ? 1 : ws.wordBar.scale);
+          ctx.save();
+          // The bar animates INDEPENDENTLY of the word (matches the DOM, where
+          // .s7-word-bar is a child with its own keyframes and centre origin).
+          if(barScale !== 1) ctx.scale(barScale, barScale);
           ctx.fillStyle = ws.wordBar.color;
           this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
           ctx.fill();
+          ctx.restore();
         }
 
         // Highlight pill behind the word (styles 1/2 highlight)
