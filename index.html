@@ -4457,6 +4457,16 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 .pp-seq-meta { font-size: 8.5px; color: var(--text3); }
 .pp-seq-rm { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 2px; }
 .pp-seq-rm:hover { color: var(--red, #ff4d6d); }
+/* ── Property-edit render: show the change, don't replay the animation ──
+   Applied to #captionDisplay while the timeline is PAUSED and the user is only
+   changing a style/animation property. Without this, every tweak re-injected the
+   keyframes and the caption animated again on its own. */
+.caption-display.no-anim,
+.caption-display.no-anim * {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* ══════════════════════════════════════════════════════
    PROJECTS DASHBOARD (CapCut-style project manager)
    ══════════════════════════════════════════════════════ */
@@ -10287,6 +10297,14 @@ function renderGroup(idx) {
   const disp = document.getElementById('captionDisplay');
   if(!disp) return;
 
+  // ── PROPERTY-EDIT RENDER (paused) ──
+  // Set by updateStyle() when the user changes a property while the timeline is
+  // stopped. The .no-anim class kills CSS animations/transitions on the caption,
+  // so the tweak is shown instantly at the current timeline position instead of
+  // replaying the animation. Cleared as soon as a normal (playback/scrub) render
+  // happens, so playing still animates.
+  disp.classList.toggle('no-anim', !!window._styleEditRender);
+
   // Cancel any pending fade-out cleanup so we don't hide a group that's starting
   clearTimeout(disp._captionClearTimer);
   cancelAnimationFrame(disp._captionFadeRaf);
@@ -10614,10 +10632,21 @@ function renderGroup(idx) {
     const layerColor = p3.randomColors ? getS3LayerColor(idx) : null;
     const activeCol  = p3.randomColors ? layerColor
                      : (p3.activeColor || (s.highlightOn ? s.hlTextColor : s.textColor));
+    // ── Bigger active word, anchored at the BOTTOM ──
+    // With a font-size boost the words must sit on a common baseline, otherwise a
+    // taller word pushes the line around. `align-items: baseline` does that in
+    // flex, and transform-origin bottom makes any extra scale grow UPWARD only.
+    const sizeOn = !!p3.activeSizeOn;
+    disp.style.alignItems = sizeOn ? 'baseline' : '';
     disp.querySelectorAll('.word-chip').forEach((chip, i) => {
       const isActive  = i === activeWordIdx;
       const isSpoken  = i < activeWordIdx;
       chip.style.opacity   = isActive ? (p3.activeOpacity/100) : isSpoken ? (p3.spokenOpacity/100) : (p3.dimOpacity/100);
+      // Grow from the bottom so the baseline never moves
+      chip.style.transformOrigin = 'center bottom';
+      chip.style.fontSize = (sizeOn && isActive)
+        ? (_scaledFontSize * (+p3.activeSizeMul || 1)).toFixed(2) + 'px'
+        : _scaledFontSize + 'px';
       chip.style.transform = isActive ? `scale(${p3.activeScale/100})` : 'scale(1)';
       // Color logic:
       //   active  → layerColor (if randomColors) or activeColor
@@ -12802,15 +12831,25 @@ function updateStyle() {
       _updateStyleRAF = null;
 
       // ── Try smooth in-place update first (no DOM rebuild) ──
+      // Suppress animation/transition for BOTH update paths while paused, so an
+      // in-place tweak (colour, scale, spacing…) also can't animate on its own.
+      const _dispNA = document.getElementById('captionDisplay');
+      if(_dispNA) _dispNA.classList.toggle('no-anim', paused);
+
       const applied = _tryInPlaceStyleUpdate();
 
       if(!applied) {
         // Fallback: full rebuild (also the path for custom-DOM styles so every
         // change shows live even when paused).
+        // While PAUSED, flag the render as a property edit so renderGroup skips
+        // CSS animations/transitions — otherwise every tweak (colour, scale,
+        // position…) re-injected the keyframes and the caption replayed itself.
         const disp = document.getElementById('captionDisplay');
         if(disp) { disp.dataset.groupIdx = ''; disp.dataset.animStyle = ''; }
         currentGroup = renderIdx;
-        renderGroup(renderIdx);
+        window._styleEditRender = paused;
+        try { renderGroup(renderIdx); }
+        finally { window._styleEditRender = false; }
       }
       // Re-apply auto-fit after in-place updates (e.g. font-size drag) too.
       if(applied && typeof applyPreviewTransform === 'function') applyPreviewTransform();
@@ -13135,7 +13174,10 @@ const animStyleProps = {
   1: { bgOpacity:0.85, barRadius:6, inDuration:200, outDuration:200 },
   2: { startScale:0, bounceScale:115, inDuration:180, outDuration:120, originX:50, originY:100 },
   3: { dimOpacity:18, spokenOpacity:45, activeOpacity:100, activeScale:106, activeColor:'', transitionMs:120,
-       randomColors:false, rcColor1:'#FFE600', rcColor2:'#00E676', rcColor3:'#FF3D3D' },
+       randomColors:false, rcColor1:'#FFE600', rcColor2:'#00E676', rcColor3:'#FF3D3D',
+       // Active-word size boost: when ON, the active word gets its own font size
+       // multiplier and grows UPWARD from its baseline (bottom stays aligned).
+       activeSizeOn:false, activeSizeMul:1.6 },
   4: { slideFrom:'bottom', inDuration:200, fadeOpacity:20, maxWords:4 },
   5: { dimOpacity:20, spokenOpacity:75, activeColor:'', glowColor:'', glowSize:8 },
   6: {
@@ -13210,6 +13252,8 @@ const animPropsConfig = {
       { key:'spokenOpacity', label:'Spoken Opacity',  type:'range', min:20, max:100, step:1, unit:'%',  fmt: v => Math.round(v)+'%' },
       { key:'activeOpacity', label:'Active Opacity',  type:'range', min:60, max:100, step:1, unit:'%',  fmt: v => Math.round(v)+'%' },
       { key:'activeScale',   label:'Active Scale',    type:'range', min:90, max:130, step:1, unit:'%',  fmt: v => Math.round(v)+'%' },
+      { key:'activeSizeOn',  label:'Bigger Active Word (grows upward)', type:'checkbox' },
+      { key:'activeSizeMul', label:'Active Word Size', type:'range', min:1, max:3, step:0.05, fmt: v => (+v).toFixed(2)+'×' },
       { key:'transitionMs',  label:'Transition Speed',type:'range', min:30, max:400, step:10,unit:'ms', fmt: v => Math.round(v)+'ms' },
       { key:'activeColor',   label:'Active Color',    type:'color', fallback:'#ffffff' },
       { key:'randomColors',  label:'Random Layer Font Colors', type:'checkbox' },

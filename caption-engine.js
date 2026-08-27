@@ -62,7 +62,7 @@
   function letterMetrics(spec, fontPx) {
     const key = fontPx + '|' + spec.fontFamily + '|' + spec.fontWeight + '|' + spec.fontStyle;
     if(key in _ocCache) return _ocCache[key];
-    let out = { centerY: 0, letterH: fontPx * 0.72 };
+    let out = { centerY: 0, letterH: fontPx * 0.72, baseline: fontPx * 0.30 };
     try {
       const m = (letterMetrics._ctx ||
         (letterMetrics._ctx = document.createElement('canvas').getContext('2d')));
@@ -74,7 +74,7 @@
       const A = (box.fontBoundingBoxAscent  != null) ? box.fontBoundingBoxAscent  : fontPx * 0.80;
       const D = (box.fontBoundingBoxDescent != null) ? box.fontBoundingBoxDescent : fontPx * 0.20;
       const baseline = (A - D) / 2;          // where textBaseline='middle' puts it
-      out = { centerY: baseline - capH / 2, letterH: capH };
+      out = { centerY: baseline - capH / 2, letterH: capH, baseline: baseline };
     } catch(_) {}
     _ocCache[key] = out;
     return out;
@@ -376,7 +376,12 @@
       const activeOp = (props.activeOpacity || 100) / 100;
       const activeScale = (props.activeScale || 106) / 100;
       const activeColor = props.activeColor || spec.color;
-      
+      // Optional active-word size boost. Reported as a separate sizeMul (not folded
+      // into `scale`) so the renderer can lay the word out at the bigger size AND
+      // anchor it at the baseline — matching the DOM's font-size + align-items:baseline.
+      const sizeOn  = !!props.activeSizeOn;
+      const sizeMul = sizeOn ? (+props.activeSizeMul || 1) : 1;
+
       return {
         words: group.words.map((_, i) => {
           const isActive = i === activeIdx;
@@ -384,13 +389,18 @@
           return {
             opacity: isActive ? activeOp : (isSpoken ? spokenOp : dimOp),
             scale: isActive ? activeScale : 1,
+            sizeMul: isActive ? sizeMul : 1,
+            anchorBottom: true,          // grow upward from the baseline
             x: 0, y: 0,
             color: isActive ? activeColor : spec.color,
             bgColor: null,
             highlighted: isActive
           };
         }),
-        containerOpacity: 1
+        containerOpacity: 1,
+        // Tells the layout/renderer that words share a common BASELINE (needed once
+        // one word is a different size, so the line doesn't shift vertically).
+        baselineAlign: sizeOn
       };
     }
     
@@ -610,8 +620,10 @@
     }
     
     // Measure single word width
-    measureWord(word, spec, targetHeight) {
-      const fontSize = spec.getScaledFontSize(targetHeight);
+    measureWord(word, spec, targetHeight, sizeMul) {
+      // sizeMul lets one word (e.g. the Opacity Cascade active word) be measured
+      // at a larger size so the line reserves the right width for it.
+      const fontSize = spec.getScaledFontSize(targetHeight) * (sizeMul || 1);
       // Measure with EXACTLY what we draw with:
       //  • the full family list (was: first family only → different fallback,
       //    so metrics diverged from the drawn glyphs)
@@ -623,7 +635,7 @@
     }
     
     // Layout entire caption group — returns positions for each word
-    layoutGroup(group, spec, targetWidth, targetHeight) {
+    layoutGroup(group, spec, targetWidth, targetHeight, sizeMulFn) {
       const fontSize = spec.getScaledFontSize(targetHeight);
       const letterSp = spec.getScaledLetterSpacing(targetHeight);
       const wordGap  = spec.wordSpacing === 0
@@ -633,17 +645,21 @@
       const pos = spec.getPixelPosition(targetWidth, targetHeight);
       const maxLineWidth = (spec.maxWidth / 100) * targetWidth;
       
-      // Measure all words
-      const wordData = group.words.map(word => ({
-        text: this.applyCase(word, spec.textTransform),
-        width: this.measureWord(word, spec, targetHeight)
-      }));
-      
+      const wordData = group.words.map((word, wi) => {
+        const mul = sizeMulFn ? (sizeMulFn(wi) || 1) : 1;
+        return {
+          text: this.applyCase(word, spec.textTransform),
+          width: this.measureWord(word, spec, targetHeight, mul),
+          size: fontSize * mul,   // px size this word is drawn at
+          mul: mul
+        };
+      });
+
       // Build lines respecting maxWidth and line breaks
       const lines = [];
       let currentLine = [];
       let currentWidth = 0;
-      
+
       wordData.forEach((word, i) => {
         const wordWidthWithGap = word.width + (currentLine.length > 0 ? wordGap : 0);
         
@@ -695,6 +711,7 @@
             y: lineY,
             width: word.width,
             height: fontSize,
+            size: word.size || fontSize,   // px size THIS word is drawn at
             lineIdx: lineIdx
           });
           cursorX += word.width + wordGap;
@@ -1080,8 +1097,13 @@
     renderFrame(ctx, spec, group, t, W, H) {
       if(!group || !group.words || !group.words.length) return;
 
-      const layout = this.layout.layoutGroup(group, spec, W, H);
+      // Animation state FIRST — a style may enlarge one word (Opacity Cascade's
+      // "Bigger Active Word"), and the layout has to reserve width for that size.
       const state  = this.anim.calculate(spec, group, t);
+      const sizeMulFn = (state.words && state.words.some(w => w && w.sizeMul && w.sizeMul !== 1))
+        ? (i => (state.words[i] && state.words[i].sizeMul) || 1)
+        : null;
+      const layout = this.layout.layoutGroup(group, spec, W, H, sizeMulFn);
       const fontPx = layout.fontSize;
       const scale  = H / (spec.canvasHeight || H);
       const containerOpacity = (state.containerOpacity == null ? 1 : state.containerOpacity);
@@ -1123,9 +1145,7 @@
       // Letter-block metrics so highlight bars hug the LETTERS (equal padding above
       // the cap tops and below the baseline) instead of the em box, whose empty
       // descender zone made bars look bottom-heavy on words like "would".
-      const lm = letterMetrics(spec, fontPx);
-      const ocY = lm.centerY;
-      const letterH = lm.letterH;
+      const lmBase = letterMetrics(spec, fontPx);
       layout.words.forEach((pw, i) => {
         const ws = words[i] || {};
         if(ws.visible === false) return;
@@ -1133,10 +1153,32 @@
         if(wordOpacity <= 0) return;
         const wScale = (ws.scale == null ? 1 : ws.scale);
 
+        // This word's own draw size + letter metrics (may differ from the line's
+        // base size when a style enlarges the active word).
+        const wSize = pw.size || fontPx;
+        const lm      = (wSize === fontPx) ? lmBase : letterMetrics(spec, wSize);
+        const ocY     = lm.centerY;
+        const letterH = lm.letterH;
+
+        // BASELINE ALIGNMENT: keep every word sitting on the same baseline, so a
+        // bigger active word grows UPWARD instead of shifting the line. The line's
+        // baseline is where a base-size word's baseline falls.
+        const baselineY = pw.y + lmBase.baseline;
+        const originY   = baselineY - lm.baseline;
+
         ctx.save();
         ctx.globalAlpha = containerOpacity * wordOpacity;
-        ctx.translate(pw.x + (ws.x||0)*scale, pw.y + (ws.y||0)*scale);
-        if(wScale !== 1) ctx.scale(wScale, wScale);
+        ctx.translate(pw.x + (ws.x||0)*scale, originY + (ws.y||0)*scale);
+        // Anchor extra scale at the BOTTOM (baseline) so it also grows upward
+        if(wScale !== 1) {
+          if(ws.anchorBottom) {
+            ctx.translate(0, lm.baseline);
+            ctx.scale(wScale, wScale);
+            ctx.translate(0, -lm.baseline);
+          } else {
+            ctx.scale(wScale, wScale);
+          }
+        }
 
         // Border/Pop-up bar behind the word (Style 7 — s7-word-bar). Uses the
         // bar's own padding/radius/color from the animation state.
@@ -1170,7 +1212,7 @@
 
         // Word glyph (into offscreen), then shadows/glow, then crisp composite
         const fillColor = ws.color || spec.color || '#fff';
-        const glyph = this._renderWordGlyph(pw.text, spec, fillColor, fontPx, scale);
+        const glyph = this._renderWordGlyph(pw.text, spec, fillColor, wSize, scale);
         const gx = -glyph.w/2, gy = -glyph.h/2;
 
         // Multi-layer drop shadows (spec.shadows: [{dist,angle,size,opacity,color}])
