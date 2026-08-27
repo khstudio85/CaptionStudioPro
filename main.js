@@ -2,7 +2,19 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
+
+// ── Packaged-build binary paths ──────────────────────────────────────────────
+// ffmpeg-static and @ffprobe-installer resolve to real .exe files inside
+// node_modules. In a packaged build that path lands INSIDE app.asar, and an
+// executable inside an asar archive cannot be spawned -- every export and probe
+// would fail with ENOENT. electron-builder's `asarUnpack` (see package.json)
+// copies both modules out to app.asar.unpacked, so rewrite the path to match.
+// In development the path contains no "app.asar" and is returned unchanged.
+const unpackedBin = p => (typeof p !== 'string') ? p
+  : p.replace('app.asar\\', 'app.asar.unpacked\\')   // Windows separator
+     .replace('app.asar/',  'app.asar.unpacked/');   // POSIX separator
+
+const ffmpegPath = unpackedBin(require('ffmpeg-static'));
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
@@ -10,7 +22,7 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 // bundled ffprobe binary so probe-video can read real source metadata.
 let ffprobePath = null;
 try {
-  ffprobePath = require('@ffprobe-installer/ffprobe').path;
+  ffprobePath = unpackedBin(require('@ffprobe-installer/ffprobe').path);
   ffmpeg.setFfprobePath(ffprobePath);
 } catch(err) {
   console.warn('[ffprobe] not available:', err.message);
@@ -69,7 +81,11 @@ function createWindow() {
   try { mainWindow.webContents.session.setPermissionCheckHandler(() => true); } catch(_) {}
 
   mainWindow.loadFile('index.html');
-  mainWindow.webContents.openDevTools();
+  // Dev only — an installed app should not open DevTools on every launch.
+  // Still available in a packaged build via `--dev` or Ctrl+Shift+I / F12.
+  if(!app.isPackaged || process.argv.includes('--dev')) {
+    mainWindow.webContents.openDevTools();
+  }
 }
 
 app.on('window-all-closed', () => {
