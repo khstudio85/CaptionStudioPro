@@ -8616,7 +8616,18 @@ let lastRenderTime  = -1;  // throttle re-renders to only when something changed
 
 function onTimeUpdate() {
   if(!audio) return;
-    
+
+  // ── Release the property-edit animation lock as soon as we're playing ──
+  // .no-anim is applied while the timeline is stopped so a property tweak doesn't
+  // replay the animation. It MUST be cleared on playback, otherwise it survives
+  // (renderGroup only runs when the active GROUP changes, so within-group word
+  // animations — the Style-7 bar pop, Style-2 pop-in — would never run again).
+  if(!audio.paused) {
+    window._styleEditRender = false;
+    const _d = document.getElementById('captionDisplay');
+    if(_d && _d.classList.contains('no-anim')) _d.classList.remove('no-anim');
+  }
+
   // ── LOCK: If playhead is locked, don't process timeupdate ──
   if(window._playheadLocked) {
     return;
@@ -10387,14 +10398,11 @@ function renderGroup(idx) {
   disp.style.background    = 'transparent';
   disp.style.padding       = '0';
 
-  // ── Keep short captions on ONE line ──
-  // A 5–6 word caption used to wrap a trailing word onto its own line when the
-  // row was a few pixels too wide. With nowrap it stays on one line and the
-  // auto-fit in applyPreviewTransform() scales it down to fit instead.
-  // Manual line breaks (column layout) and longer groups still wrap normally.
-  const _maxWordsOneLine = 6;
-  disp.style.flexWrap = (!lineBreakEnabled && group.words.length <= _maxWordsOneLine)
-    ? 'nowrap' : 'wrap';
+  // Wrapping stays at the CSS default (wrap) for every style. Reset it here so a
+  // 'nowrap' left behind by the Opacity Cascade block doesn't leak into the style
+  // the user switches to. (Forcing nowrap globally changed how every other style
+  // laid out long captions — not what was asked for.)
+  disp.style.flexWrap = '';
 
   // ── Caption background bar — style-independent (matches exported video) ──
   // Shown for ANY animation style when the Text-panel bg toggle (alpha>0) is on.
@@ -10649,6 +10657,9 @@ function renderGroup(idx) {
     const sizeOn = !!p3.activeSizeOn;
     const sizeMul = sizeOn ? (+p3.activeSizeMul || 1) : 1;
     disp.style.alignItems = '';                 // uniform font-size → normal centring
+    // Keep a short caption on ONE line (auto-fit shrinks it if it's a little wide),
+    // instead of dropping a trailing word onto its own line. Style-3 only.
+    disp.style.flexWrap = (!lineBreakEnabled && group.words.length <= 6) ? 'nowrap' : 'wrap';
     disp.querySelectorAll('.word-chip').forEach((chip, i) => {
       const isActive  = i === activeWordIdx;
       const isSpoken  = i < activeWordIdx;
