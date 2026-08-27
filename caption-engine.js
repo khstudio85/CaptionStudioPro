@@ -169,6 +169,7 @@
       this.positionX       = options.positionX       || 50;  // % from left
       this.positionY       = options.positionY       || 70;  // % from top
       this.maxWidth        = options.maxWidth        || 85;  // % of canvas width
+      this.maxWordsPerLine = options.maxWordsPerLine || 6;   // keep short captions on one line
       
       // === ANIMATION ===
       this.animationStyle  = options.animationStyle  || 0;   // 0-8 (which style)
@@ -376,9 +377,11 @@
       const activeOp = (props.activeOpacity || 100) / 100;
       const activeScale = (props.activeScale || 106) / 100;
       const activeColor = props.activeColor || spec.color;
-      // Optional active-word size boost. Reported as a separate sizeMul (not folded
-      // into `scale`) so the renderer can lay the word out at the bigger size AND
-      // anchor it at the baseline — matching the DOM's font-size + align-items:baseline.
+      // Optional active-word size boost, folded into `scale`.
+      // IMPORTANT: this is a pure TRANSFORM, not a layout change. Laying the word
+      // out at the bigger size reserved extra width and pushed every other word
+      // sideways (and could force an extra line). A transform grows the word in
+      // place, so all inactive words keep their exact positions.
       const sizeOn  = !!props.activeSizeOn;
       const sizeMul = sizeOn ? (+props.activeSizeMul || 1) : 1;
 
@@ -388,19 +391,15 @@
           const isSpoken = i < activeIdx;
           return {
             opacity: isActive ? activeOp : (isSpoken ? spokenOp : dimOp),
-            scale: isActive ? activeScale : 1,
-            sizeMul: isActive ? sizeMul : 1,
-            anchorBottom: true,          // grow upward from the baseline
+            scale: isActive ? activeScale * sizeMul : 1,
+            anchorBottom: true,          // grow UPWARD from the baseline
             x: 0, y: 0,
             color: isActive ? activeColor : spec.color,
             bgColor: null,
             highlighted: isActive
           };
         }),
-        containerOpacity: 1,
-        // Tells the layout/renderer that words share a common BASELINE (needed once
-        // one word is a different size, so the line doesn't shift vertically).
-        baselineAlign: sizeOn
+        containerOpacity: 1
       };
     }
     
@@ -659,6 +658,9 @@
       const lines = [];
       let currentLine = [];
       let currentWidth = 0;
+      // Keep short captions on a single line (auto-fit handles any overflow)
+      const maxWordsPerLine = spec.maxWordsPerLine || 6;
+      const keepOneLine = !spec.lineBreakEnabled && group.words.length <= maxWordsPerLine;
 
       wordData.forEach((word, i) => {
         const wordWidthWithGap = word.width + (currentLine.length > 0 ? wordGap : 0);
@@ -671,7 +673,16 @@
           return;
         }
         
-        // Auto wrap
+        // Auto wrap.
+        // A short caption (≤ maxWordsPerLine, default 6) is kept on ONE line even
+        // if it's slightly wider than the box — the renderer's auto-fit shrinks it
+        // instead. Wrapping a 5-word caption to a second line for a few pixels is
+        // what produced the stray word on its own line.
+        if(keepOneLine) {
+          currentLine.push(word);
+          currentWidth += wordWidthWithGap;
+          return;
+        }
         if(currentWidth + wordWidthWithGap > maxLineWidth && currentLine.length > 0) {
           lines.push(currentLine);
           currentLine = [word];
@@ -912,6 +923,7 @@
         positionX:      gn('posX', 50),
         positionY:      gn('posY', 70),
         maxWidth:       gn('maxWidth', 85),
+        maxWordsPerLine: (typeof wordsPerGroup !== 'undefined' ? Math.max(6, wordsPerGroup) : 6),
         
         // Animation
         animationStyle:    currentStyle,
@@ -1097,13 +1109,11 @@
     renderFrame(ctx, spec, group, t, W, H) {
       if(!group || !group.words || !group.words.length) return;
 
-      // Animation state FIRST — a style may enlarge one word (Opacity Cascade's
-      // "Bigger Active Word"), and the layout has to reserve width for that size.
       const state  = this.anim.calculate(spec, group, t);
-      const sizeMulFn = (state.words && state.words.some(w => w && w.sizeMul && w.sizeMul !== 1))
-        ? (i => (state.words[i] && state.words[i].sizeMul) || 1)
-        : null;
-      const layout = this.layout.layoutGroup(group, spec, W, H, sizeMulFn);
+      // Layout ALWAYS uses the base font size, so word positions are identical
+      // whichever word is active. An enlarged active word is a transform on top of
+      // this stable layout — it never re-flows the line.
+      const layout = this.layout.layoutGroup(group, spec, W, H);
       const fontPx = layout.fontSize;
       const scale  = H / (spec.canvasHeight || H);
       const containerOpacity = (state.containerOpacity == null ? 1 : state.containerOpacity);

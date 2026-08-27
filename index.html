@@ -10387,6 +10387,15 @@ function renderGroup(idx) {
   disp.style.background    = 'transparent';
   disp.style.padding       = '0';
 
+  // ── Keep short captions on ONE line ──
+  // A 5–6 word caption used to wrap a trailing word onto its own line when the
+  // row was a few pixels too wide. With nowrap it stays on one line and the
+  // auto-fit in applyPreviewTransform() scales it down to fit instead.
+  // Manual line breaks (column layout) and longer groups still wrap normally.
+  const _maxWordsOneLine = 6;
+  disp.style.flexWrap = (!lineBreakEnabled && group.words.length <= _maxWordsOneLine)
+    ? 'nowrap' : 'wrap';
+
   // ── Caption background bar — style-independent (matches exported video) ──
   // Shown for ANY animation style when the Text-panel bg toggle (alpha>0) is on.
   // Per-style code may still call hideCaptionBgBar() but that no-ops while enabled.
@@ -10633,21 +10642,22 @@ function renderGroup(idx) {
     const activeCol  = p3.randomColors ? layerColor
                      : (p3.activeColor || (s.highlightOn ? s.hlTextColor : s.textColor));
     // ── Bigger active word, anchored at the BOTTOM ──
-    // With a font-size boost the words must sit on a common baseline, otherwise a
-    // taller word pushes the line around. `align-items: baseline` does that in
-    // flex, and transform-origin bottom makes any extra scale grow UPWARD only.
+    // Done with a TRANSFORM, never font-size: a font-size change re-flows the flex
+    // row and pushes every other word sideways (and could force an extra line).
+    // A transform grows the word in place, so inactive words never move, and
+    // transform-origin:center bottom makes it grow UPWARD from the shared baseline.
     const sizeOn = !!p3.activeSizeOn;
-    disp.style.alignItems = sizeOn ? 'baseline' : '';
+    const sizeMul = sizeOn ? (+p3.activeSizeMul || 1) : 1;
+    disp.style.alignItems = '';                 // uniform font-size → normal centring
     disp.querySelectorAll('.word-chip').forEach((chip, i) => {
       const isActive  = i === activeWordIdx;
       const isSpoken  = i < activeWordIdx;
       chip.style.opacity   = isActive ? (p3.activeOpacity/100) : isSpoken ? (p3.spokenOpacity/100) : (p3.dimOpacity/100);
-      // Grow from the bottom so the baseline never moves
-      chip.style.transformOrigin = 'center bottom';
-      chip.style.fontSize = (sizeOn && isActive)
-        ? (_scaledFontSize * (+p3.activeSizeMul || 1)).toFixed(2) + 'px'
-        : _scaledFontSize + 'px';
-      chip.style.transform = isActive ? `scale(${p3.activeScale/100})` : 'scale(1)';
+      chip.style.fontSize  = _scaledFontSize + 'px';   // ALWAYS the base size
+      chip.style.transformOrigin = 'center bottom';    // grow upward, bottom fixed
+      chip.style.transform = isActive
+        ? `scale(${(p3.activeScale/100) * sizeMul})`
+        : 'scale(1)';
       // Color logic:
       //   active  → layerColor (if randomColors) or activeColor
       //   spoken  → textColor (back to normal after being said)
