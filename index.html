@@ -788,7 +788,9 @@ body {
   position: relative;
 }
 
-/* Left panel — absolute top-left, only top half */
+/* Left panel — absolute top-left, covers preview + resize handle + playbar.
+   height:50% is only the pre-JS fallback; _syncLeftPanelHeight() pins the real
+   bottom edge to the top of .timeline-section so no dead strip is left below. */
 .left-panel {
   position: absolute;
   top: 0; left: 0;
@@ -19726,6 +19728,41 @@ function updatePreviewFontSize() {
 // Watch for preview panel resize — re-render current caption with new scale.
 // Font size is proportional to previewWrap.clientHeight so it stays visually
 // constant regardless of panel size or fullscreen.
+// ─────────────────────────────────────────────────────────────────
+// _syncLeftPanelHeight()
+// .left-panel is absolutely positioned over the top-left of .main with a CSS
+// height of 50%. The region it's meant to cover (preview + resize handle +
+// playbar) is sized dynamically by the vertical resize handle, so 50% rarely
+// matched it — leaving a dead strip of background under the panel that only
+// looked right after dragging the preview divider.
+// Pin the panel's bottom edge to the top of the timeline instead.
+// ─────────────────────────────────────────────────────────────────
+function _syncLeftPanelHeight() {
+  const lp   = document.querySelector('.left-panel');
+  const main = document.getElementById('mainApp');
+  const tl   = document.querySelector('.timeline-section');
+  if(!lp || !main || !tl) return;
+  const h = tl.getBoundingClientRect().top - main.getBoundingClientRect().top;
+  if(h > 60) lp.style.height = Math.round(h) + 'px';
+}
+
+// Keep it in sync with the preview/timeline resize and window resize
+(function() {
+  const run = () => requestAnimationFrame(_syncLeftPanelHeight);
+  window.addEventListener('resize', run);
+  window.addEventListener('load', () => { run(); setTimeout(run, 300); });
+  if(window.ResizeObserver) {
+    const attach = () => {
+      ['.preview-area-wrap', '.timeline-section', '.playbar-zone'].forEach(sel => {
+        const el = document.querySelector(sel);
+        if(el) new ResizeObserver(run).observe(el);
+      });
+    };
+    if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+    else attach();
+  }
+})();
+
 function watchPreviewResize() {
   const pw = document.getElementById('previewWrap');
   if(!pw) return;
@@ -20925,10 +20962,13 @@ document.addEventListener('keydown', e => {
       wrap.style.height    = newH + 'px';
       wrap.style.minHeight = newH + 'px';
       wrap.style.maxHeight = newH + 'px';
-      // Sync Project panel height
+      // Sync Project panel height.
+      // NOT to newH — that's only the PREVIEW area, so the panel stopped short of
+      // the resize handle + playbar and left an uncovered strip beneath it.
+      // _syncLeftPanelHeight() pins it to the top of the timeline instead.
       const lp     = document.getElementById('leftPanel');
       const spacer = document.getElementById('previewLpSpacer');
-      if(lp) lp.style.height = newH + 'px';
+      if(typeof _syncLeftPanelHeight === 'function') _syncLeftPanelHeight();
       if(spacer && lp) spacer.style.width = lp.offsetWidth + 'px';
       // Re-scale captions font to new preview size
       if(typeof updatePreviewFontSize === 'function') updatePreviewFontSize();
@@ -20950,8 +20990,7 @@ document.addEventListener('keydown', e => {
   requestAnimationFrame(() => {
     const lp     = document.getElementById('leftPanel');
     const spacer = document.getElementById('previewLpSpacer');
-    const wrapH  = wrap.getBoundingClientRect().height;
-    if(lp && wrapH > 0) lp.style.height = wrapH + 'px';
+    if(typeof _syncLeftPanelHeight === 'function') _syncLeftPanelHeight();
     if(spacer && lp) spacer.style.width = lp.offsetWidth + 'px';
   });
 })();
