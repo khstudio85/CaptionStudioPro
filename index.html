@@ -13220,26 +13220,27 @@ const animStyleProps = {
   4: { slideFrom:'bottom', inDuration:200, fadeOpacity:20, maxWords:4 },
   5: { dimOpacity:20, spokenOpacity:75, activeColor:'', glowColor:'', glowSize:8 },
   6: {
-    line1Dur:     600,      // ms — line 1 anim duration  (total ≈1–1.5s)
-    line2Dur:     700,      // ms — line 2 anim duration
-    line2Delay:   200,      // ms — nicer stagger between the two lines
-    scaleStart:   92,       // % — line 2 scale at 0% keyframe (smooth reveal)
+    // Defaults captured from the user's tuned Apple Reveal setup.
+    line1Dur:     200,      // ms — line 1 anim duration
+    line2Dur:     600,      // ms — line 2 anim duration
+    line2Delay:   210,      // ms — stagger between the two lines
+    scaleStart:   99,       // % — line 2 scale at 0% keyframe (near-imperceptible pop)
     direction:    'up',     // 'up' | 'down' | 'left' | 'right'
-    line1Color:   '#AAAAAA',// light gray top line
+    line1Color:   '#db6a00',// warm amber top line
     line2Color:   '#FFFFFF',// white bottom line
-    line1Font:    '',       // '' = inherit main font
-    line2Font:    '',       // '' = inherit main font
-    // Size multipliers kept at/below 1× so Apple Reveal renders at the SAME
-    // font size as every other style (it used to blow up to 1.18× base).
-    line1SizeMul: 0.85,     // × base font size — subtle contrast on the top line
-    line2SizeMul: 1.0,      // × base font size — main line matches base exactly
+    line1Font:    'Raleway',   // '' = inherit main font
+    line2Font:    'Russo One', // '' = inherit main font
+    // Size multipliers kept at/below 1x so Apple Reveal renders at the SAME
+    // font size as every other style (it used to blow up to 1.18x base).
+    line1SizeMul: 0.4,      // x base font size — small kicker line on top
+    line2SizeMul: 0.9,      // x base font size — main line
     line1Weight:  300,      // font-weight thin
-    line2Weight:  800,      // font-weight heavy
-    trackingLine1:0.08,     // em letter-spacing line 1
-    trackingLine2:0.01,     // em letter-spacing line 2
-    lineGap:      8,        // px gap between lines (-40…+40)
-    glowAmt:      14,       // px white glow on line 2 (softer)
-    splitAt:      -1,       // -1 = auto midpoint split
+    line2Weight:  900,      // font-weight heaviest
+    trackingLine1:0.07,     // em letter-spacing line 1
+    trackingLine2:0,        // em letter-spacing line 2
+    lineGap:      -13,      // px gap between lines (-40..+40) — tight overlap
+    glowAmt:      14,       // px white glow on line 2
+    splitAt:      5,        // split after word 5 (-1 = auto midpoint)
   },
   // Subtle by default: full-opacity bar, late peak, gentle 104% bounce and a
   // smooth ease-out curve (no springy overshoot).
@@ -13331,7 +13332,7 @@ const animPropsConfig = {
       { key:'direction',     label:'Anim Direction',    type:'select', options:['up','down','left','right'], labels:['↑ Bottom → Top','↓ Top → Bottom','→ Left → Right','← Right → Left'] },
       { key:'scaleStart',    label:'Scale Start',       type:'range', min:80,  max:99,   step:1,    fmt: v => Math.round(v)+'%' },
       // ── Colors ──
-      { key:'line1Color',    label:'Line 1 Color',      type:'color', fallback:'#AAAAAA' },
+      { key:'line1Color',    label:'Line 1 Color',      type:'color', fallback:'#db6a00' },
       { key:'line2Color',    label:'Line 2 Color',      type:'color', fallback:'#FFFFFF' },
       // ── Typography ──
       { key:'line1Font',     label:'Line 1 Font',       type:'fontselect' },
