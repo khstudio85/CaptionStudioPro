@@ -10660,6 +10660,13 @@ function renderGroup(idx) {
     // Keep a short caption on ONE line (auto-fit shrinks it if it's a little wide),
     // instead of dropping a trailing word onto its own line. Style-3 only.
     disp.style.flexWrap = (!lineBreakEnabled && group.words.length <= 6) ? 'nowrap' : 'wrap';
+    // Word spacing = the Text panel's global value + this style's extra offset.
+    // One effective number, so preview and export can't disagree.
+    const _gapExtra = (+p3.wordGapExtra || 0);
+    if(_gapExtra !== 0) {
+      disp.style.columnGap =
+        Math.max(0, _baseGap + (s.wordGap + _gapExtra) * _fontScale) + 'px';
+    }
     disp.querySelectorAll('.word-chip').forEach((chip, i) => {
       const isActive  = i === activeWordIdx;
       const isSpoken  = i < activeWordIdx;
@@ -10669,6 +10676,10 @@ function renderGroup(idx) {
       chip.style.transform = isActive
         ? `scale(${(p3.activeScale/100) * sizeMul})`
         : 'scale(1)';
+      // Active word paints ON TOP of its neighbours. Chips are siblings, so
+      // without this the following word overlaps an enlarged active word.
+      chip.style.position = 'relative';
+      chip.style.zIndex   = isActive ? '5' : '1';
       // Color logic:
       //   active  → layerColor (if randomColors) or activeColor
       //   spoken  → textColor (back to normal after being said)
@@ -13194,11 +13205,16 @@ function getAnimStyleName(n) {
 const animStyleProps = {
   1: { bgOpacity:0.85, barRadius:6, inDuration:200, outDuration:200 },
   2: { startScale:0, bounceScale:115, inDuration:180, outDuration:120, originX:50, originY:100 },
-  3: { dimOpacity:18, spokenOpacity:45, activeOpacity:100, activeScale:106, activeColor:'', transitionMs:120,
+  3: { dimOpacity:18, spokenOpacity:45, activeOpacity:100, activeScale:106,
+       activeColor:'#04FD00',            // default active-word colour
+       transitionMs:120,
        randomColors:false, rcColor1:'#FFE600', rcColor2:'#00E676', rcColor3:'#FF3D3D',
        // Active-word size boost: when ON, the active word gets its own font size
        // multiplier and grows UPWARD from its baseline (bottom stays aligned).
-       activeSizeOn:false, activeSizeMul:1.6 },
+       activeSizeOn:false, activeSizeMul:1.6,
+       // Extra horizontal spacing between words, ADDED to the global Word Spacing
+       // in the Text panel (so there's still one effective value, no rival state).
+       wordGapExtra:0 },
   4: { slideFrom:'bottom', inDuration:200, fadeOpacity:20, maxWords:4 },
   5: { dimOpacity:20, spokenOpacity:75, activeColor:'', glowColor:'', glowSize:8 },
   6: {
@@ -13275,6 +13291,7 @@ const animPropsConfig = {
       { key:'activeScale',   label:'Active Scale',    type:'range', min:90, max:130, step:1, unit:'%',  fmt: v => Math.round(v)+'%' },
       { key:'activeSizeOn',  label:'Bigger Active Word (grows upward)', type:'checkbox' },
       { key:'activeSizeMul', label:'Active Word Size', type:'range', min:1, max:3, step:0.05, fmt: v => (+v).toFixed(2)+'×' },
+      { key:'wordGapExtra',  label:'Word Spacing (extra)', type:'range', min:-20, max:120, step:1, unit:'px', fmt: v => Math.round(v)+'px' },
       { key:'transitionMs',  label:'Transition Speed',type:'range', min:30, max:400, step:10,unit:'ms', fmt: v => Math.round(v)+'ms' },
       { key:'activeColor',   label:'Active Color',    type:'color', fallback:'#ffffff' },
       { key:'randomColors',  label:'Random Layer Font Colors', type:'checkbox' },

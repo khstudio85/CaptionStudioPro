@@ -878,7 +878,10 @@
         fontStyle:      isItalic ? 'italic' : fs.style,
         letterSpacing:  gn('letterSpacing', 0),
         lineHeight:     1 + (gn('lineSpacing', 0) / 100),
-        wordSpacing:    gn('wordGap', 0),
+        // Global Word Spacing (Text panel) + the active style's optional extra
+        // offset, so the export uses the same single effective value as the preview.
+        wordSpacing:    gn('wordGap', 0) +
+                        (((styleProps && styleProps[currentStyle]) || {}).wordGapExtra || 0),
         textTransform:  textCase,
         textAlign:      textAlign,
         
@@ -1156,9 +1159,18 @@
       // the cap tops and below the baseline) instead of the em box, whose empty
       // descender zone made bars look bottom-heavy on words like "would".
       const lmBase = letterMetrics(spec, fontPx);
-      layout.words.forEach((pw, i) => {
+      // Paint order: every inactive word first, then the ACTIVE one last so it sits
+      // ON TOP. Canvas has no z-index — later draws win — so without this the next
+      // word overlapped an enlarged active word. Stable: relative order is kept
+      // within each group, so nothing else about the layout changes.
+      const drawOrder = layout.words.map((_, i) => i)
+        .sort((a, b) => ((words[a] && words[a].highlighted) ? 1 : 0) -
+                        ((words[b] && words[b].highlighted) ? 1 : 0));
+
+      drawOrder.forEach((i) => {
+        const pw = layout.words[i];
         const ws = words[i] || {};
-        if(ws.visible === false) return;
+        if(!pw || ws.visible === false) return;
         const wordOpacity = (ws.opacity == null ? 1 : ws.opacity);
         if(wordOpacity <= 0) return;
         const wScale = (ws.scale == null ? 1 : ws.scale);
