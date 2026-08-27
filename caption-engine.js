@@ -47,6 +47,41 @@
     }
   }
 
+  // ── Optical centre of the letters, shared by the canvas renderer AND the DOM
+  // preview so highlight bars sit identically in both. Returns the y offset from
+  // the em-box centre to the centre of the cap/ascender→baseline block.
+  // (Glyphs centre on the em box, which reserves descender space, so a word with
+  // no descenders — "would" — otherwise sits high in its bar.)
+  // Returns { centerY, letterH } in the same px units as fontPx:
+  //   letterH  = height of the visible letter block (cap top → baseline)
+  //   centerY  = y of that block's centre, measured from the drawing origin
+  //              (the origin is the em-box centre, where textBaseline='middle' sits)
+  // Sizing a bar as letterH + 2*padV and centring it on centerY puts EXACTLY padV
+  // above the letter tops and padV below the baseline — equal space top and bottom.
+  const _ocCache = Object.create(null);
+  function letterMetrics(spec, fontPx) {
+    const key = fontPx + '|' + spec.fontFamily + '|' + spec.fontWeight + '|' + spec.fontStyle;
+    if(key in _ocCache) return _ocCache[key];
+    let out = { centerY: 0, letterH: fontPx * 0.72 };
+    try {
+      const m = (letterMetrics._ctx ||
+        (letterMetrics._ctx = document.createElement('canvas').getContext('2d')));
+      m.font = fontShorthand(spec, fontPx);
+      m.textBaseline = 'alphabetic';
+      const cap = m.measureText('H');
+      const box = m.measureText('Hg');
+      const capH = (cap.actualBoundingBoxAscent > 0) ? cap.actualBoundingBoxAscent : fontPx * 0.72;
+      const A = (box.fontBoundingBoxAscent  != null) ? box.fontBoundingBoxAscent  : fontPx * 0.80;
+      const D = (box.fontBoundingBoxDescent != null) ? box.fontBoundingBoxDescent : fontPx * 0.20;
+      const baseline = (A - D) / 2;          // where textBaseline='middle' puts it
+      out = { centerY: baseline - capH / 2, letterH: capH };
+    } catch(_) {}
+    _ocCache[key] = out;
+    return out;
+  }
+  // Back-compat: just the centre offset
+  function opticalCenterOffset(spec, fontPx) { return letterMetrics(spec, fontPx).centerY; }
+
   // CSS cubic-bezier(x1,y1,x2,y2) evaluator, so canvas animations use the SAME
   // timing curve the preview's CSS keyframes use (Newton-Raphson on x, then y).
   function cubicBezier(x1, y1, x2, y2) {
@@ -965,6 +1000,16 @@
       return g;
     }
 
+    // ── Optical vertical centre of the letters ──────────────────────────────
+    // Glyphs are drawn with textBaseline='middle', which centres the EM BOX —
+    // and the em box reserves descender space. So a word with no descenders
+    // ("would") ends up sitting high in its highlight bar, with a visible gap
+    // underneath. This returns the y offset from the drawing origin to the
+    // optical centre of the cap/ascender→baseline block, so bars can be centred
+    // on the letters instead of on the em box.
+    // Font-level metrics (not per-word bounds) keep every word's bar aligned.
+    _opticalCenterY(spec, fontPx) { return opticalCenterOffset(spec, fontPx); }
+
     _roundRectPath(ctx, x, y, w, h, r) {
       r = Math.max(0, Math.min(r, w/2, h/2));
       ctx.beginPath();
@@ -1075,6 +1120,12 @@
 
       // ── Per-word draw ──
       const words = state.words || [];
+      // Letter-block metrics so highlight bars hug the LETTERS (equal padding above
+      // the cap tops and below the baseline) instead of the em box, whose empty
+      // descender zone made bars look bottom-heavy on words like "would".
+      const lm = letterMetrics(spec, fontPx);
+      const ocY = lm.centerY;
+      const letterH = lm.letterH;
       layout.words.forEach((pw, i) => {
         const ws = words[i] || {};
         if(ws.visible === false) return;
@@ -1093,14 +1144,15 @@
           const padH = (ws.wordBar.padH || 0) * scale;
           const padV = (ws.wordBar.padV || 0) * scale;
           const bw = pw.width + padH*2;
-          const bh = fontPx + padV*2;
+          const bh = letterH + padV*2;   // hug the letters, not the em box
           const barScale = (ws.wordBar.scale == null ? 1 : ws.wordBar.scale);
           ctx.save();
           // The bar animates INDEPENDENTLY of the word (matches the DOM, where
           // .s7-word-bar is a child with its own keyframes and centre origin).
           if(barScale !== 1) ctx.scale(barScale, barScale);
           ctx.fillStyle = ws.wordBar.color;
-          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
+          // Centre on the LETTERS, not the em box (see _opticalCenterY)
+          this._roundRectPath(ctx, -bw/2, ocY - bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
           ctx.fill();
           ctx.restore();
         }
@@ -1110,7 +1162,7 @@
           const padH = (spec.highlightPadH || 0) * scale;
           const padV = (spec.highlightPadV || 0) * scale;
           const bw = pw.width + padH*2;
-          const bh = fontPx + padV*2;
+          const bh = fontPx + padV*2;    // em-box pill — matches the DOM (background + box-shadow)
           ctx.fillStyle = ws.bgColor;
           this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (spec.highlightRadius||0)*scale);
           ctx.fill();
@@ -1176,6 +1228,7 @@
     FONT_STYLE_MAP,
     fontShorthand,
     applyLetterSpacing,
+    opticalCenterOffset,
     version: '1.1.0'
   };
   

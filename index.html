@@ -11316,11 +11316,36 @@ function _ensureStyle8Keyframes() {
 // Bar lives INSIDE each chip as a child <span class="s7-word-bar">.
 // NEW: scale bounces over FULL word duration · delayed start · instant exit (no opacity fade)
 
+// Letter-block geometry for the CURRENT preview font, from the same engine helper
+// the export uses — so a highlight bar sits identically in preview and export.
+// Returns { top, bottom } insets (preview px) to apply to a bar that would
+// otherwise wrap the em box: the em box reserves descender space, which made bars
+// look bottom-heavy on words without descenders ("would").
+function _domBarInsets(s, padV) {
+  try {
+    if(typeof CaptionEngine === 'undefined' || !CaptionEngine.opticalCenterOffset) {
+      return { top: -padV, bottom: -padV };
+    }
+    const map = CaptionEngine.FONT_STYLE_MAP;
+    const fs  = map[s.fontStyle] || map.regular;
+    const px  = Math.max(2, (s.fontSize || 32) * getPreviewFontScale());
+    const spec = {
+      fontFamily: s.fontFamily,
+      fontWeight: (typeof captionBold !== 'undefined' && captionBold) ? 900 : fs.weight,
+      fontStyle:  (typeof captionItalic !== 'undefined' && captionItalic) ? 'italic' : fs.style
+    };
+    const off = CaptionEngine.opticalCenterOffset(spec, px);   // + = letters sit lower
+    // Shift both edges by `off` so the bar translates onto the letter block
+    return { top: -padV + off, bottom: -padV - off };
+  } catch(_) { return { top: -padV, bottom: -padV }; }
+}
+
 function renderStyle7(disp, group, idx, activeWordIdx, s, baseStyle) {
   hideCaptionBgBar();
   const p7       = animStyleProps[7] || {};
   const padH     = p7.padH     ?? 8;
   const padV     = p7.padV     ?? 5;
+  const barIns   = _domBarInsets(s, padV);
   const rad      = p7.barRadius ?? 7;
   const bgAlpha  = (p7.bgOpacity ?? 88) / 100;
   const barColor = hexAlpha(s.hlBgColor || '#6c47ff', bgAlpha);
@@ -11345,8 +11370,8 @@ function renderStyle7(disp, group, idx, activeWordIdx, s, baseStyle) {
             transition: color 0.12s ease, transform 0.18s cubic-bezier(0.34,1.56,0.64,1);
             transform-origin:center center;">
         <span class="s7-word-bar"
-          style="top:-${padV}px; left:-${padH}px;
-                 right:-${padH}px; bottom:-${padV}px;
+          style="top:${barIns.top}px; left:-${padH}px;
+                 right:-${padH}px; bottom:${barIns.bottom}px;
                  border-radius:${rad}px;
                  background:${barColor};"></span>
         <span class="s7-chip-text">${applyCase(w)}</span>
@@ -11356,10 +11381,10 @@ function renderStyle7(disp, group, idx, activeWordIdx, s, baseStyle) {
     disp.querySelectorAll('.s7-word-bar').forEach(b => {
       b.style.background    = barColor;
       b.style.borderRadius  = rad + 'px';
-      b.style.top           = `-${padV}px`;
+      b.style.top           = `${barIns.top}px`;
       b.style.left          = `-${padH}px`;
       b.style.right         = `-${padH}px`;
-      b.style.bottom        = `-${padV}px`;
+      b.style.bottom        = `${barIns.bottom}px`;
     });
   }
 
