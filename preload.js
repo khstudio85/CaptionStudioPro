@@ -29,6 +29,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Last-project auto-save / one-click resume
   saveLastProject: (jsonStr) => ipcRenderer.invoke('save-last-project', jsonStr),
   loadLastProject: () => ipcRenderer.invoke('load-last-project'),
+
+  // ── Project store (multi-project: dashboard, save/load/rename/dup/delete) ──
+  projectsList:      () => ipcRenderer.invoke('projects-list'),
+  projectsLoad:      (id) => ipcRenderer.invoke('projects-load', id),
+  projectsSave:      (payload) => ipcRenderer.invoke('projects-save', payload),
+  projectsRename:    (payload) => ipcRenderer.invoke('projects-rename', payload),
+  projectsDuplicate: (payload) => ipcRenderer.invoke('projects-duplicate', payload),
+  projectsDelete:    (id) => ipcRenderer.invoke('projects-delete', id),
   
   // NEW: Frame-based export (CapCut style)
   exportFramesMode: (options) => ipcRenderer.invoke('export-frames-mode', options),

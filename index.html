@@ -4457,6 +4457,86 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 .pp-seq-meta { font-size: 8.5px; color: var(--text3); }
 .pp-seq-rm { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; padding: 0 2px; }
 .pp-seq-rm:hover { color: var(--red, #ff4d6d); }
+/* ══════════════════════════════════════════════════════
+   PROJECTS DASHBOARD (CapCut-style project manager)
+   ══════════════════════════════════════════════════════ */
+#projectsDash {
+  position: fixed; inset: 0; z-index: 999990; display: none;
+  background: var(--bg, #0d0d12); overflow: auto;
+}
+#projectsDash.open { display: block; }
+.pd-top {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 18px 26px; background: rgba(13,13,18,0.96);
+  border-bottom: 1px solid var(--border, #2a2a3a); backdrop-filter: blur(8px);
+}
+.pd-title { font-size: 20px; font-weight: 900; color: #fff; letter-spacing: .3px; }
+.pd-count { font-size: 11px; color: var(--text3, #888); font-weight: 700; }
+.pd-spacer { flex: 1; }
+.pd-search {
+  background: var(--bg3, #1c1c26); border: 1px solid var(--border, #2a2a3a);
+  color: #fff; border-radius: 8px; padding: 8px 12px; font-size: 12px; width: 220px;
+}
+.pd-search:focus { outline: none; border-color: var(--accent2, #9d7eff); }
+.pd-sort {
+  background: var(--bg3, #1c1c26); border: 1px solid var(--border, #2a2a3a);
+  color: #fff; border-radius: 8px; padding: 8px 10px; font-size: 12px; cursor: pointer;
+}
+.pd-new {
+  background: linear-gradient(135deg, var(--accent, #6c47ff), #9d7eff);
+  color: #fff; border: none; border-radius: 9px; padding: 9px 16px;
+  font-size: 13px; font-weight: 800; cursor: pointer;
+}
+.pd-new:hover { filter: brightness(1.1); }
+.pd-close {
+  background: transparent; border: 1px solid var(--border2, #3a3a4a); color: var(--text2, #aaa);
+  border-radius: 8px; padding: 8px 12px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.pd-close:hover { color: #fff; border-color: var(--accent2, #9d7eff); }
+.pd-section { padding: 18px 26px 6px; font-size: 10px; font-weight: 800;
+  letter-spacing: 1px; text-transform: uppercase; color: var(--text3, #888); }
+.pd-grid {
+  display: grid; gap: 16px; padding: 8px 26px 30px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.pd-card {
+  background: var(--bg2, #14141c); border: 1.5px solid var(--border, #2a2a3a);
+  border-radius: 12px; overflow: hidden; cursor: pointer; transition: all .14s;
+  display: flex; flex-direction: column; position: relative;
+}
+.pd-card:hover { border-color: var(--accent2, #9d7eff); transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(0,0,0,.45); }
+.pd-thumb {
+  aspect-ratio: 16/9; background: #000 center/cover no-repeat;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; color: #333; border-bottom: 1px solid var(--border, #2a2a3a);
+}
+.pd-meta { padding: 10px 12px; }
+.pd-name { font-size: 13px; font-weight: 800; color: #fff; margin-bottom: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pd-sub { font-size: 10.5px; color: var(--text3, #888); line-height: 1.5; }
+.pd-badge {
+  position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,.72);
+  color: #fff; font-size: 9.5px; font-weight: 800; padding: 2px 6px; border-radius: 4px;
+}
+.pd-menu-btn {
+  position: absolute; top: 6px; left: 6px; width: 24px; height: 24px;
+  background: rgba(0,0,0,.6); border: none; color: #fff; border-radius: 6px;
+  cursor: pointer; font-size: 13px; line-height: 1; opacity: 0; transition: opacity .12s;
+}
+.pd-card:hover .pd-menu-btn { opacity: 1; }
+.pd-empty { text-align: center; padding: 90px 20px; color: var(--text3, #888); }
+.pd-empty-title { font-size: 18px; font-weight: 800; color: #fff; margin-bottom: 6px; }
+/* Save-status pill */
+#saveStatus {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 999995; padding: 5px 12px; border-radius: 20px; font-size: 11px;
+  font-weight: 700; pointer-events: none; opacity: 0; transition: opacity .2s;
+  background: rgba(20,20,28,.94); border: 1px solid var(--border2, #3a3a4a); color: var(--text2, #aaa);
+}
+#saveStatus.show { opacity: 1; }
+#saveStatus.saved { color: var(--green, #00e5a0); border-color: rgba(0,229,160,.4); }
 /* Project-panel right-click menu (New Sequence From Clip, …) */
 .pp-ctx-item {
   padding: 7px 9px; border-radius: 5px; cursor: pointer;
@@ -5480,11 +5560,14 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 
   <!-- Project Save / Load -->
   <div style="display:flex;gap:5px;margin-left:10px;">
-    <button class="tb-btn" onclick="saveProject()" title="Save Project (.csp)" style="background:linear-gradient(135deg,#1a3a2a,#1e4a34);border-color:rgba(0,229,160,0.35);color:#00e5a0;font-weight:700;gap:4px;display:flex;align-items:center;">
+    <button class="tb-btn" onclick="ProjectManager.save({})" title="Save project (Ctrl+S) — stays in My Projects" style="background:linear-gradient(135deg,#1a3a2a,#1e4a34);border-color:rgba(0,229,160,0.35);color:#00e5a0;font-weight:700;gap:4px;display:flex;align-items:center;">
       💾 Save
     </button>
-    <button class="tb-btn" onclick="document.getElementById('openProjectFile').click()" title="Open Project (.csp)" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
-      📂 Open
+    <button class="tb-btn" onclick="openProjectsDashboard()" title="My Projects — open, rename, duplicate, delete" style="border-color:rgba(108,71,255,0.35);color:var(--accent2);gap:4px;display:flex;align-items:center;font-weight:700;">
+      📁 Projects
+    </button>
+    <button class="tb-btn" onclick="document.getElementById('openProjectFile').click()" title="Import a .csp project file" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
+      📂 Import
     </button>
     <button class="tb-btn" onclick="openLastProject()" title="Resume your last project in one click" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
       ⏮ Open Last
@@ -19882,6 +19965,25 @@ function collectProjectData() {
     virtualT:            window._virtualT || 0,
     isVideoMode:         !!window._isVideoMode,
     activePreviewClipId: (typeof _activePreviewClipId !== 'undefined' ? _activePreviewClipId : null),
+    // ── Editing-session state, so reopening resumes exactly where you left off ──
+    editState: {
+      tlZoom:          (typeof tlZoom !== 'undefined' ? tlZoom : 1),
+      scrollLeft:      (document.getElementById('timelineScroll') || {}).scrollLeft || 0,
+      selectedClipId:  (typeof selectedClipId !== 'undefined' ? selectedClipId : null),
+      selectedClipIds: (typeof selectedClipIds !== 'undefined' && selectedClipIds) ? Array.from(selectedClipIds) : [],
+      selectedGi:      (typeof selectedGi !== 'undefined' ? selectedGi : -1),
+      selectedWi:      (typeof selectedWi !== 'undefined' ? selectedWi : -1),
+      currentGroup:    (typeof currentGroup !== 'undefined' ? currentGroup : -1),
+      // Which right-panel tab was open (Captions / Text / Animation / Smart Cut)
+      activeTab: (function() {
+        const el = document.querySelector('.cc-tab.active');
+        return el ? (el.id || '').replace('cctab-', '') : 'captions';
+      })(),
+      // Multi-sequence: names + per-sequence snapshots
+      sequences:        (typeof sequences !== 'undefined') ? JSON.parse(JSON.stringify(
+                          sequences.map(s => ({ id: s.id, name: s.name })))) : [],
+      activeSequenceId: (typeof activeSequenceId !== 'undefined' ? activeSequenceId : null),
+    },
   };
 }
 
@@ -19954,7 +20056,8 @@ async function _offerResumeLastProject() {
     document.body.appendChild(b);
   } catch(_) {}
 }
-window.addEventListener('load', () => setTimeout(_offerResumeLastProject, 800));
+// NOTE: no self-registration here — the ProjectManager's launch handler decides
+// between opening My Projects and showing this resume banner (avoids both firing).
 
 function updatePreviewResolutionDisplay(proj) {
   const label = document.getElementById('previewResDisplay');
@@ -20109,6 +20212,41 @@ async function applyProjectData(data) {
   document.querySelectorAll('.cc-anim-card').forEach(c => c.classList.remove('selected'));
   const card = document.getElementById('ccAnimCard' + currentAnimStyle);
   if(card) card.classList.add('selected');
+
+  // ── Restore the editing session (zoom, scroll, selection, open panel) ──
+  const es = data.editState;
+  if(es) {
+    if(es.sequences && es.sequences.length && typeof sequences !== 'undefined') {
+      // Rebuild the sequence list; the active one's live state is what we restored
+      sequences = es.sequences.map(s => ({ id: s.id, name: s.name, state: null }));
+      activeSequenceId = es.activeSequenceId != null ? es.activeSequenceId : (sequences[0] && sequences[0].id);
+      const cur = sequences.find(s => s.id === activeSequenceId);
+      if(cur && typeof _captureSequenceState === 'function') cur.state = _captureSequenceState();
+      if(typeof _seqCounter !== 'undefined') {
+        _seqCounter = Math.max(_seqCounter, ...sequences.map(s => s.id || 0));
+      }
+      if(typeof renderSequenceTabs === 'function') renderSequenceTabs();
+    }
+    if(es.tlZoom && typeof applyZoom === 'function') applyZoom(es.tlZoom);
+    if(typeof selectedClipId !== 'undefined') selectedClipId = es.selectedClipId != null ? es.selectedClipId : null;
+    if(typeof primarySelectedClipId !== 'undefined') primarySelectedClipId = selectedClipId;
+    if(typeof selectedClipIds !== 'undefined') selectedClipIds = new Set(es.selectedClipIds || []);
+    if(typeof selectedGi !== 'undefined') selectedGi = (es.selectedGi != null ? es.selectedGi : -1);
+    if(typeof selectedWi !== 'undefined') selectedWi = (es.selectedWi != null ? es.selectedWi : -1);
+    if(typeof updateClipSelectionUI === 'function') updateClipSelectionUI();
+    if(typeof _updateEditBtnStates === 'function') _updateEditBtnStates();
+    // Re-open the panel tab the user was on
+    if(es.activeTab) {
+      const tab = document.getElementById('cctab-' + es.activeTab);
+      if(tab && typeof ccSwitch === 'function') ccSwitch(es.activeTab, tab);
+      if(es.activeTab === 'smartcut' && typeof renderSmartCut === 'function') renderSmartCut();
+    }
+    // Restore the horizontal scroll last (after zoom set the content width)
+    requestAnimationFrame(() => {
+      const sc = document.getElementById('timelineScroll');
+      if(sc && es.scrollLeft) sc.scrollLeft = es.scrollLeft;
+    });
+  }
 
   updateUndoRedoBtns();
 }
@@ -27986,6 +28124,474 @@ function _applyResetPreset() {
 
   console.log('%c[parity] harness ready — __parity("overlay"|"diff"|"off") or Ctrl+Shift+P', 'color:#9d7eff');
 })();
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     PROJECTS DASHBOARD + SAVE STATUS
+     ═══════════════════════════════════════════════════════════════ -->
+<div id="saveStatus"></div>
+<div id="projectsDash">
+  <div class="pd-top">
+    <div>
+      <div class="pd-title">My Projects</div>
+      <div class="pd-count" id="pdCount"></div>
+    </div>
+    <div class="pd-spacer"></div>
+    <input class="pd-search" id="pdSearch" type="text" placeholder="Search projects…" oninput="_pdRender()">
+    <select class="pd-sort" id="pdSort" onchange="_pdRender()">
+      <option value="modified">Recently Modified</option>
+      <option value="created">Recently Created</option>
+      <option value="az">Name A–Z</option>
+      <option value="za">Name Z–A</option>
+    </select>
+    <button class="pd-new" onclick="ProjectManager.createProject()">＋ New Project</button>
+    <button class="pd-close" onclick="closeProjectsDashboard()">✕ Close</button>
+  </div>
+  <div id="pdBody"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// PROJECT MANAGER — persistence layer (CapCut-style multi-project)
+// Kept separate from the UI: it only talks to the main-process project
+// store and to the app's existing collectProjectData()/applyProjectData().
+// ═══════════════════════════════════════════════════════════════════
+const ProjectManager = (function() {
+  const SCHEMA = 1;                 // project schema version (for migrations)
+  const AUTOSAVE_MS = 1200;         // debounce after the last change
+  let current = null;               // { id, name, created, lastModified, ... }
+  let dirty = false;
+  let saving = false;
+  let timer = null;
+
+  const api = () => (window.electronAPI && window.electronAPI.projectsList) ? window.electronAPI : null;
+  const newId = () => 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+
+  function status(text, cls) {
+    const el = document.getElementById('saveStatus');
+    if(!el) return;
+    el.textContent = text;
+    el.className = 'show' + (cls ? ' ' + cls : '');
+    clearTimeout(el._t);
+    el._t = setTimeout(() => { el.className = ''; }, cls === 'saved' ? 1600 : 8000);
+  }
+
+  // Small JPEG thumbnail from the current preview frame (cheap to store)
+  function thumbnail() {
+    try {
+      const v = document.getElementById('previewVideoEl');
+      if(!v || !v.videoWidth) return null;
+      const W = 320, H = Math.max(1, Math.round(W * v.videoHeight / v.videoWidth));
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      c.getContext('2d').drawImage(v, 0, 0, W, H);
+      return c.toDataURL('image/jpeg', 0.6);
+    } catch(_) { return null; }
+  }
+
+  function buildMeta() {
+    const clip = (typeof audioClips !== 'undefined' && audioClips.length) ? audioClips[0] : null;
+    const pf   = clip && typeof projectFiles !== 'undefined' ? projectFiles.find(f => f.id === clip.fileId) : null;
+    const proj = (typeof projects !== 'undefined') ? projects.find(p => p.id === activeProjectId) : null;
+    const dur  = (typeof getContentDur === 'function') ? getContentDur() : 0;
+    const now  = Date.now();
+    const prevThumb = current && current.thumb;
+    return {
+      schema: SCHEMA,
+      id: current ? current.id : newId(),
+      name: (current && current.name) || (pf && pf.name ? pf.name.replace(/\.[^.]+$/, '') : 'Untitled Project'),
+      created: (current && current.created) || now,
+      lastModified: now,
+      duration: dur || 0,
+      resolution: (proj && proj.res) || (pf && pf.videoWidth ? pf.videoWidth + 'x' + pf.videoHeight : ''),
+      fps: (proj && proj.fps) || (pf && pf.meta && pf.meta.fps) || null,
+      mediaName: pf ? pf.name : (window._audioFileName || ''),
+      captionCount: (typeof wordGroups !== 'undefined') ? wordGroups.length : 0,
+      clipCount: (typeof audioClips !== 'undefined') ? audioClips.length : 0,
+      thumb: thumbnail() || prevThumb || null,
+    };
+  }
+
+  async function save(opts) {
+    const a = api();
+    if(!a) return { success: false, error: 'Project store unavailable' };
+    if(!audioClips || !audioClips.length) return { success: false, error: 'Nothing to save yet' };
+    if(saving) return { success: false, error: 'busy' };
+    saving = true;
+    if(!(opts && opts.silent)) status('Saving…');
+    try {
+      const meta = buildMeta();
+      const data = JSON.stringify(collectProjectData());
+      const res = await a.projectsSave({ meta, data });
+      if(res && res.success) {
+        current = meta; dirty = false;
+        if(!(opts && opts.silent)) status('Saved', 'saved');
+      } else {
+        status('Save failed', '');
+        console.warn('[Projects] save failed:', res && res.error);
+      }
+      return res;
+    } catch(e) {
+      status('Save failed', '');
+      console.error('[Projects] save error:', e);
+      return { success: false, error: e.message };
+    } finally { saving = false; }
+  }
+
+  // Debounced autosave — called from the app's own "something changed" signal
+  function markDirty() {
+    if(!api()) return;
+    if(!audioClips || !audioClips.length) return;
+    dirty = true;
+    clearTimeout(timer);
+    timer = setTimeout(() => { save({}); }, AUTOSAVE_MS);
+  }
+
+  async function list() {
+    const a = api();
+    if(!a) return [];
+    const res = await a.projectsList();
+    return (res && res.projects) ? res.projects : [];
+  }
+
+  async function open(id) {
+    const a = api();
+    if(!a) return;
+    const res = await a.projectsLoad(id);
+    if(!res || !res.success) { showToast('❌ Could not open project'); return; }
+    let payload;
+    try { payload = JSON.parse(res.data); } catch(e) { showToast('❌ Project file is corrupt'); return; }
+    const data = payload.data || payload;         // tolerate older shapes
+    try {
+      await applyProjectData(_migrate(data, (payload.meta && payload.meta.schema) || 0));
+      current = payload.meta || { id, name: 'Project', created: Date.now(), lastModified: Date.now() };
+      dirty = false;
+      closeProjectsDashboard();
+      status('Saved', 'saved');
+      showToast('📂 ' + (current.name || 'Project') + ' — resumed');
+      _checkMissingMedia();
+    } catch(e) {
+      console.error('[Projects] open failed:', e);
+      showToast('❌ Open failed: ' + e.message);
+    }
+  }
+
+  // Schema migration hook — older projects keep working as the format evolves
+  function _migrate(data, fromSchema) {
+    if(!data) return data;
+    if(!fromSchema || fromSchema < 1) {
+      // v0 → v1: editState/meta didn't exist; nothing to rewrite, defaults apply.
+      data.editState = data.editState || null;
+    }
+    return data;
+  }
+
+  async function createProject() {
+    // Save whatever is open first so nothing is lost
+    if(current && dirty) await save({ silent: true });
+    current = null;
+    if(typeof newSequence === 'function') {
+      // Reuse the existing full reset (clears footage, captions, timeline)
+      const hadWork = (audioClips && audioClips.length);
+      if(hadWork && !confirm('Start a new project? The current one has been saved.')) return;
+      _resetForNewProject();
+    }
+    current = {
+      schema: SCHEMA, id: newId(), name: 'Untitled Project',
+      created: Date.now(), lastModified: Date.now()
+    };
+    closeProjectsDashboard();
+    showToast('🆕 New project — import your video to begin');
+    status('New project', 'saved');
+  }
+
+  function _resetForNewProject() {
+    if(typeof _clearWorkingState === 'function') _clearWorkingState();
+    if(typeof sequences !== 'undefined') { sequences = []; activeSequenceId = null; }
+    if(typeof renderSequenceTabs === 'function') renderSequenceTabs();
+  }
+
+  async function rename(id, name) {
+    const a = api(); if(!a || !name) return;
+    const res = await a.projectsRename({ id, name });
+    if(res && res.success) {
+      if(current && current.id === id) current.name = name;
+      showToast('✏️ Renamed to "' + name + '"');
+      _pdRender();
+    } else showToast('❌ Rename failed');
+  }
+
+  async function duplicate(id, name) {
+    const a = api(); if(!a) return;
+    const res = await a.projectsDuplicate({ id, newId: newId(), newName: name });
+    if(res && res.success) { showToast('⧉ Duplicated as "' + name + '"'); _pdRender(); }
+    else showToast('❌ Duplicate failed');
+  }
+
+  async function remove(id) {
+    const a = api(); if(!a) return;
+    const res = await a.projectsDelete(id);
+    if(res && res.success) {
+      if(current && current.id === id) current = null;
+      showToast('🗑️ Project deleted');
+      _pdRender();
+    } else showToast('❌ Delete failed');
+  }
+
+  return {
+    get current() { return current; },
+    get isDirty() { return dirty; },
+    save, markDirty, list, open, createProject, rename, duplicate, remove, status,
+    saveProject: save, autoSaveProject: markDirty, loadProject: open,
+    getProjects: list, renameProject: rename, duplicateProject: duplicate, deleteProject: remove,
+  };
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// DASHBOARD UI
+// ═══════════════════════════════════════════════════════════════════
+let _pdProjects = [];
+
+async function openProjectsDashboard() {
+  _pdProjects = await ProjectManager.list();
+  document.getElementById('projectsDash').classList.add('open');
+  _pdRender();
+}
+function closeProjectsDashboard() {
+  document.getElementById('projectsDash').classList.remove('open');
+}
+
+function _pdFmtDate(ts) {
+  if(!ts) return '—';
+  const d = new Date(ts), now = new Date();
+  const t = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const sameDay = d.toDateString() === now.toDateString();
+  const yest = new Date(now.getTime() - 86400000).toDateString() === d.toDateString();
+  if(sameDay) return 'Today, ' + t;
+  if(yest) return 'Yesterday, ' + t;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + t;
+}
+function _pdFmtDur(s) {
+  s = Math.max(0, Math.round(s || 0));
+  const m = Math.floor(s / 60), sec = s % 60;
+  return m + ':' + String(sec).padStart(2, '0');
+}
+
+function _pdRender() {
+  const body = document.getElementById('pdBody');
+  const cnt  = document.getElementById('pdCount');
+  if(!body) return;
+  const q    = (document.getElementById('pdSearch') || {}).value || '';
+  const sort = (document.getElementById('pdSort') || {}).value || 'modified';
+
+  let items = _pdProjects.slice();
+  if(q.trim()) {
+    const s = q.trim().toLowerCase();
+    items = items.filter(p => (p.name || '').toLowerCase().includes(s));
+  }
+  items.sort((a, b) =>
+    sort === 'created' ? (b.created || 0) - (a.created || 0)
+  : sort === 'az'      ? String(a.name||'').localeCompare(String(b.name||''))
+  : sort === 'za'      ? String(b.name||'').localeCompare(String(a.name||''))
+  :                      (b.lastModified || 0) - (a.lastModified || 0));
+
+  if(cnt) cnt.textContent = _pdProjects.length
+    ? (_pdProjects.length + ' project' + (_pdProjects.length === 1 ? '' : 's'))
+    : '';
+
+  if(!_pdProjects.length) {
+    body.innerHTML =
+      '<div class="pd-empty">' +
+        '<div style="font-size:44px;margin-bottom:10px;">🎬</div>' +
+        '<div class="pd-empty-title">No projects yet</div>' +
+        '<div style="font-size:12.5px;margin-bottom:18px;">Create your first caption project to get started.</div>' +
+        '<button class="pd-new" onclick="ProjectManager.createProject()">＋ New Project</button>' +
+      '</div>';
+    return;
+  }
+  if(!items.length) {
+    body.innerHTML = '<div class="pd-empty"><div class="pd-empty-title">No matches</div>' +
+      '<div style="font-size:12.5px;">Nothing matches “' + _seqEsc(q) + '”.</div></div>';
+    return;
+  }
+
+  const card = (p) => {
+    const thumb = p.thumb
+      ? '<div class="pd-thumb" style="background-image:url(' + p.thumb + ')"></div>'
+      : '<div class="pd-thumb">🎬</div>';
+    const bits = [];
+    if(p.duration)   bits.push(_pdFmtDur(p.duration));
+    if(p.resolution) bits.push(p.resolution.replace('x', '×'));
+    if(p.captionCount) bits.push(p.captionCount + ' captions');
+    return '<div class="pd-card" onclick="ProjectManager.open(\'' + p.id + '\')">' +
+      thumb +
+      (p.duration ? '<span class="pd-badge">' + _pdFmtDur(p.duration) + '</span>' : '') +
+      '<button class="pd-menu-btn" onclick="event.stopPropagation();_pdMenu(event,\'' + p.id + '\')" title="More">⋯</button>' +
+      '<div class="pd-meta">' +
+        '<div class="pd-name">' + _seqEsc(p.name || 'Untitled') + '</div>' +
+        '<div class="pd-sub">Last edited: ' + _pdFmtDate(p.lastModified) + '<br>' + bits.join(' · ') + '</div>' +
+      '</div></div>';
+  };
+
+  // "Recent Projects" strip (most recent 5) + all projects
+  const recent = _pdProjects.slice().sort((a,b) => (b.lastModified||0)-(a.lastModified||0)).slice(0, 5);
+  let html = '';
+  if(!q.trim() && _pdProjects.length > 5) {
+    html += '<div class="pd-section">Recent Projects</div>' +
+            '<div class="pd-grid">' + recent.map(card).join('') + '</div>';
+  }
+  html += '<div class="pd-section">' + (q.trim() ? 'Search Results' : 'All Projects') + '</div>' +
+          '<div class="pd-grid">' + items.map(card).join('') + '</div>';
+  body.innerHTML = html;
+}
+
+// Card context menu: Rename · Duplicate · Delete
+function _pdMenu(ev, id) {
+  ev.preventDefault(); ev.stopPropagation();
+  const old = document.getElementById('pdCtx'); if(old) old.remove();
+  const p = _pdProjects.find(x => x.id === id) || { name: 'Project' };
+  const m = document.createElement('div');
+  m.id = 'pdCtx';
+  m.style.cssText = 'position:fixed;z-index:999999;min-width:170px;padding:4px;' +
+    'background:var(--bg2,#14141c);border:1px solid var(--border2,#3a3a4a);border-radius:8px;' +
+    'box-shadow:0 14px 40px rgba(0,0,0,.6);font-size:12px;';
+  m.innerHTML =
+    '<div class="pp-ctx-item" data-a="rename">✏️ Rename</div>' +
+    '<div class="pp-ctx-item" data-a="dup">⧉ Duplicate</div>' +
+    '<div style="height:1px;background:var(--border,#2a2a3a);margin:3px 4px;"></div>' +
+    '<div class="pp-ctx-item danger" data-a="del">🗑 Delete</div>';
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.min(ev.clientX, innerWidth - r.width - 8) + 'px';
+  m.style.top  = Math.min(ev.clientY, innerHeight - r.height - 8) + 'px';
+
+  const close = () => { m.remove(); document.removeEventListener('mousedown', out, true); };
+  const out = (e) => { if(!e.target.closest('#pdCtx')) close(); };
+  setTimeout(() => document.addEventListener('mousedown', out, true), 0);
+
+  m.querySelectorAll('.pp-ctx-item').forEach(el => el.addEventListener('click', async () => {
+    const a = el.dataset.a; close();
+    if(a === 'rename') {
+      const n = prompt('Rename project:', p.name || '');
+      if(n && n.trim()) { await ProjectManager.rename(id, n.trim()); _pdProjects = await ProjectManager.list(); _pdRender(); }
+    } else if(a === 'dup') {
+      await ProjectManager.duplicate(id, (p.name || 'Project') + ' Copy');
+      _pdProjects = await ProjectManager.list(); _pdRender();
+    } else if(a === 'del') {
+      if(confirm('Delete this project?\n\n"' + (p.name || 'Untitled') + '"\n\nThis cannot be undone. Your source media files are NOT deleted.')) {
+        await ProjectManager.remove(id);
+        _pdProjects = await ProjectManager.list(); _pdRender();
+      }
+    }
+  }));
+}
+
+// ── Missing media → offer relink (captions/timeline stay intact) ──
+function _checkMissingMedia() {
+  if(typeof projectFiles === 'undefined') return;
+  const missing = projectFiles.filter(f => !f.url);
+  const old = document.getElementById('relinkBanner'); if(old) old.remove();
+  if(!missing.length) return;
+  const b = document.createElement('div');
+  b.id = 'relinkBanner';
+  b.style.cssText = 'position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:999996;' +
+    'background:linear-gradient(135deg,#3a1a1a,#4a1e1e);border:1px solid rgba(255,77,109,.45);' +
+    'color:#ffe9ee;padding:10px 14px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);' +
+    'display:flex;align-items:center;gap:12px;font-size:13px;';
+  b.innerHTML = '<span>⚠️ Media file missing — <b>' + _seqEsc(missing.map(m => m.name).join(', ')) + '</b></span>' +
+    '<button onclick="relinkMedia()" style="background:#ff4d6d;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-weight:800;cursor:pointer;">Relink Media</button>' +
+    '<button onclick="this.parentNode.remove()" style="background:transparent;color:#fbb;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:6px 10px;cursor:pointer;">Later</button>';
+  document.body.appendChild(b);
+}
+
+function relinkMedia() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.multiple = true;
+  inp.accept = 'video/*,audio/*';
+  inp.onchange = () => {
+    const files = Array.from(inp.files || []);
+    if(!files.length) return;
+    const missing = projectFiles.filter(f => !f.url);
+    let linked = 0;
+    missing.forEach(pf => {
+      // Match by filename first, then fall back to positional order
+      let f = files.find(x => x.name === pf.name) || files[linked];
+      if(!f) return;
+      pf.file = f;
+      pf.url  = URL.createObjectURL(f);
+      if(window.electronAPI && window.electronAPI.getFilePath) {
+        try { pf.path = window.electronAPI.getFilePath(f) || pf.path; } catch(_) {}
+      }
+      linked++;
+      if(typeof _extractWaveformForFile === 'function') _extractWaveformForFile(f, pf.id);
+    });
+    if(!linked) { showToast('⚠️ No matching media selected'); return; }
+    if(typeof _restorePreviewFromClips === 'function') _restorePreviewFromClips();
+    if(typeof buildAudioClipTrack === 'function') buildAudioClipTrack();
+    if(typeof buildTimeline === 'function') buildTimeline();
+    if(typeof renderProjectPanel === 'function') renderProjectPanel();
+    const b = document.getElementById('relinkBanner'); if(b) b.remove();
+    showToast('🔗 Relinked ' + linked + ' file(s) — captions & timeline preserved');
+    ProjectManager.markDirty();
+  };
+  inp.click();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTOSAVE WIRING
+// saveHistory() is the app's own "something changed" signal (called by caption
+// edits, timing changes, styling, trims, splits, track ops…), so hooking it
+// gives autosave complete coverage without touching dozens of call sites.
+// ═══════════════════════════════════════════════════════════════════
+(function() {
+  const origSaveHistory = window.saveHistory;
+  if(typeof origSaveHistory === 'function') {
+    window.saveHistory = function() {
+      const r = origSaveHistory.apply(this, arguments);
+      try { ProjectManager.markDirty(); } catch(_) {}
+      return r;
+    };
+  }
+  const origUpdateStyle = window.updateStyle;
+  if(typeof origUpdateStyle === 'function') {
+    window.updateStyle = function() {
+      const r = origUpdateStyle.apply(this, arguments);
+      try { ProjectManager.markDirty(); } catch(_) {}
+      return r;
+    };
+  }
+})();
+
+// Warn on close if a save is still pending
+window.addEventListener('beforeunload', (e) => {
+  if(ProjectManager.isDirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// Ctrl/Cmd+S → save now
+document.addEventListener('keydown', (e) => {
+  if((e.ctrlKey || e.metaKey) && e.code === 'KeyS') {
+    const tag = document.activeElement ? document.activeElement.tagName : '';
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+    ProjectManager.save({});
+  }
+});
+
+// ── On launch: open My Projects when saved projects exist (CapCut-style home) ──
+// Falls back to the legacy "resume last project" banner for users who have an
+// auto-saved session but no entries in the project store yet.
+window.addEventListener('load', () => {
+  setTimeout(async () => {
+    try {
+      const list = await ProjectManager.list();
+      _pdProjects = list;
+      if(list.length) openProjectsDashboard();
+      else if(typeof _offerResumeLastProject === 'function') _offerResumeLastProject();
+    } catch(_) {
+      if(typeof _offerResumeLastProject === 'function') _offerResumeLastProject();
+    }
+  }, 700);
+});
 </script>
 </body>
 </html>

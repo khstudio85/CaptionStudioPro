@@ -148,6 +148,120 @@ ipcMain.handle('probe-video', async (event, filePath) => {
 });
 
 // ═══════════════════════════════════════════
+// PROJECT STORE  (CapCut-style multi-project persistence)
+// ───────────────────────────────────────────
+// Storage choice: this is Electron, so projects live as JSON files under
+// app.getPath('userData')/projects/ with a small index.json for the dashboard.
+// That's the desktop equivalent of IndexedDB and strictly better here — no quota
+// limits for large caption sets, survives cache clearing, and the main process
+// already owns fs. Each project is its own file so one write can never corrupt
+// another project, and writes are atomic (temp file + rename).
+// ═══════════════════════════════════════════
+const PROJECTS_SCHEMA = 1;
+
+function _projectsDir() {
+  const d = path.join(app.getPath('userData'), 'projects');
+  if(!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+function _projectsIndexPath() { return path.join(_projectsDir(), 'index.json'); }
+function _projectFilePath(id)  { return path.join(_projectsDir(), String(id).replace(/[^A-Za-z0-9_-]/g, '') + '.json'); }
+
+function _readIndex() {
+  try {
+    const p = _projectsIndexPath();
+    if(!fs.existsSync(p)) return { schema: PROJECTS_SCHEMA, projects: [] };
+    const idx = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if(!idx || !Array.isArray(idx.projects)) return { schema: PROJECTS_SCHEMA, projects: [] };
+    return idx;
+  } catch(_) { return { schema: PROJECTS_SCHEMA, projects: [] }; }
+}
+// Atomic write so a crash mid-save can't leave a truncated file
+function _writeJsonAtomic(filePath, obj) {
+  const tmp = filePath + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj), 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+function _writeIndex(idx) {
+  idx.schema = PROJECTS_SCHEMA;
+  _writeJsonAtomic(_projectsIndexPath(), idx);
+}
+
+// List project METADATA only (fast — the dashboard never loads full projects)
+ipcMain.handle('projects-list', async () => {
+  try { return { success: true, projects: _readIndex().projects }; }
+  catch(e) { return { success: false, error: e.message, projects: [] }; }
+});
+
+ipcMain.handle('projects-load', async (event, id) => {
+  try {
+    const p = _projectFilePath(id);
+    if(!fs.existsSync(p)) return { success: false, error: 'Project not found' };
+    return { success: true, data: fs.readFileSync(p, 'utf8') };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// Save (create or update). `meta` is the dashboard card info, `data` the full state.
+ipcMain.handle('projects-save', async (event, { meta, data }) => {
+  try {
+    if(!meta || !meta.id) return { success: false, error: 'Missing project id' };
+    _writeJsonAtomic(_projectFilePath(meta.id), { meta, data: JSON.parse(data) });
+    const idx = _readIndex();
+    const i = idx.projects.findIndex(p => p.id === meta.id);
+    if(i >= 0) idx.projects[i] = meta;      // UPDATE in place — never duplicate
+    else idx.projects.push(meta);
+    _writeIndex(idx);
+    return { success: true, meta };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('projects-rename', async (event, { id, name }) => {
+  try {
+    const idx = _readIndex();
+    const m = idx.projects.find(p => p.id === id);
+    if(!m) return { success: false, error: 'Project not found' };
+    m.name = name; m.lastModified = Date.now();
+    _writeIndex(idx);
+    // Keep the copy inside the project file in sync
+    const fp = _projectFilePath(id);
+    if(fs.existsSync(fp)) {
+      const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      if(full && full.meta) { full.meta.name = name; full.meta.lastModified = m.lastModified; _writeJsonAtomic(fp, full); }
+    }
+    return { success: true, meta: m };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('projects-duplicate', async (event, { id, newId, newName }) => {
+  try {
+    const fp = _projectFilePath(id);
+    if(!fs.existsSync(fp)) return { success: false, error: 'Project not found' };
+    const full = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    const now = Date.now();
+    const meta = Object.assign({}, full.meta, {
+      id: newId, name: newName, created: now, lastModified: now
+    });
+    // Fully independent copy — new id, new file, deep-copied state
+    _writeJsonAtomic(_projectFilePath(newId), { meta, data: full.data });
+    const idx = _readIndex();
+    idx.projects.push(meta);
+    _writeIndex(idx);
+    return { success: true, meta };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('projects-delete', async (event, id) => {
+  try {
+    const fp = _projectFilePath(id);
+    if(fs.existsSync(fp)) fs.unlinkSync(fp);     // removes only this project's file
+    const idx = _readIndex();
+    idx.projects = idx.projects.filter(p => p.id !== id);
+    _writeIndex(idx);
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// ═══════════════════════════════════════════
 // LAST PROJECT (auto-save / one-click resume)
 // Stored in the app's userData folder so it survives restarts and has no size
 // limit (unlike localStorage). Media itself stays in place — we save the paths.
