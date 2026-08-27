@@ -5595,6 +5595,9 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
     </div>
 
     <div class="export-dropdown" id="exportDropdown">
+      <button class="tb-btn" id="parityBtn" onclick="toggleExportPreview()"
+        title="Export Preview — show the caption exactly as the EXPORT renderer draws it (same engine, same frame). Click again for the live editor preview."
+        style="border-color:rgba(0,212,255,0.35);color:#00d4ff;font-weight:700;">◎ Export Preview</button>
       <button class="tb-btn export-main-btn" onclick="toggleExportMenu()">⬇ Export ▾</button>
       <div class="export-menu" id="exportMenu">
         <div class="export-item" onclick="exportSRT()">
@@ -10396,22 +10399,13 @@ function renderGroup(idx) {
         : `text-shadow:${_shadowLayers};`)
     : '';
   
-  // Font style from dropdown overrides pattern buttons
-  const fsMap = {
-    'regular':    { weight:'400', style:'normal'  },
-    'bold':       { weight:'700', style:'normal'  },
-    'italic':     { weight:'400', style:'italic'  },
-    'bolditalic': { weight:'700', style:'italic'  },
-    'light':      { weight:'300', style:'normal'  },
-    'medium':     { weight:'500', style:'normal'  },
-    'semibold':   { weight:'600', style:'normal'  },
-    'black':      { weight:'900', style:'normal'  },
-    'thin':       { weight:'100', style:'normal'  },
-    'extralight': { weight:'200', style:'normal'  },
-    'extrabold':  { weight:'800', style:'normal'  },
-    'condensed':  { weight:'700', style:'normal'  },
-  };
-  const fs = fsMap[s.fontStyle] || { weight:'400', style:'normal' };
+  // Font style from dropdown overrides pattern buttons.
+  // SINGLE SOURCE OF TRUTH: the same table the export renderer uses
+  // (CaptionEngine.FONT_STYLE_MAP) — a local copy is how weights drifted before.
+  const fsMap = (typeof CaptionEngine !== 'undefined' && CaptionEngine.FONT_STYLE_MAP)
+    ? CaptionEngine.FONT_STYLE_MAP
+    : { 'regular':{weight:400,style:'normal'}, 'bold':{weight:700,style:'normal'} };
+  const fs = fsMap[s.fontStyle] || fsMap.regular || { weight:400, style:'normal' };
   const boldStyle  = `font-weight:${captionBold   ? '900' : fs.weight};`;
   const italStyle  = `font-style:${captionItalic  ? 'italic' : fs.style};`;
   const underStyle = captionUnder  ? 'text-decoration:underline;' : '';
@@ -19248,22 +19242,22 @@ async function renderCaptionFrames(width, height, fps, duration, offsetTime, onP
   const spec = CaptionEngine.StyleCollector.fromUI();
   const renderer = new CaptionEngine.CaptionRenderer();
 
-  // Fonts must be ready or the canvas renders with a fallback face (§6).
-  // Canvas 2D only uses already-loaded fonts, so force-load before rendering.
-  try {
-    if(document.fonts) {
-      const fam = (spec.fontFamily || '').replace(/['"]/g, '').split(',')[0].trim();
-      const decl = (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) + ' 64px "' + fam + '"';
-      try { await document.fonts.load(decl); } catch(_) {}
-      try { await document.fonts.ready; } catch(_) {}
-      if(!document.fonts.check(decl)) {
-        console.warn('[Export] Font "' + fam + '" (' + spec.fontWeight + ') not available to canvas — export may use a fallback face. ' +
-                     'Make sure this font/weight is loaded (Google Fonts <link> or a local @font-face).');
-      } else {
-        console.log('[Export] Font ready:', fam, spec.fontWeight);
-      }
-    }
-  } catch(_) {}
+  // ── EXPORT VALIDATION (font must be REAL, never a silent substitute) ──
+  // ensureFont() loads the exact weight/style, waits for fonts.ready, then proves
+  // the family actually resolves by measuring it against a non-existent family.
+  // If it fell back we ABORT with a clear message rather than shipping the wrong
+  // font — silently substituting is exactly the bug being fixed here.
+  const fontCheck = await renderer.ensureFont(spec);
+  if(!fontCheck.ok) {
+    const msg = 'Font "' + fontCheck.family + '" (weight ' + fontCheck.weight + ', ' + fontCheck.style + ') ' +
+                'could not be loaded — ' + (fontCheck.reason || 'unavailable') + '.\n\n' +
+                'Export cancelled so the video is not rendered with a different font.\n' +
+                'Wait for the font to finish loading, or pick another font in the Text panel.';
+    console.error('[Export] FONT VALIDATION FAILED:', fontCheck);
+    if(typeof _scpFontError === 'function') _scpFontError(msg);
+    throw new Error(msg);
+  }
+  console.log('[Export] Font validated:', fontCheck.family, fontCheck.weight, fontCheck.style);
 
   // Offscreen canvas at the exact export resolution (transparent overlay).
   const canvas = document.createElement('canvas');
@@ -28123,7 +28117,49 @@ function _applyResetPreset() {
   });
 
   console.log('%c[parity] harness ready — __parity("overlay"|"diff"|"off") or Ctrl+Shift+P', 'color:#9d7eff');
+
+  // ── Public toggle: EXPORT PREVIEW ──────────────────────────────────────────
+  // Draws the caption with the EXACT renderer the exporter uses (same
+  // CaptionRenderer, same CaptionStyleSpec, same frame timestamp), so what you
+  // see here is what the MP4 will contain. Cycles: off → export → diff → off.
+  //   • export : canvas only (DOM captions hidden)
+  //   • diff   : canvas at 50% over the DOM preview — any offset shows as ghosting
+  window.toggleExportPreview = function() {
+    const next = mode === 'off' ? 'overlay' : (mode === 'overlay' ? 'diff' : 'off');
+    window.__parity(next);
+    const btn = document.getElementById('parityBtn');
+    if(btn) {
+      btn.textContent = next === 'overlay' ? '◎ Export Preview: ON'
+                      : next === 'diff'    ? '◎ Compare (diff)'
+                      :                      '◎ Export Preview';
+      btn.style.background = next === 'off' ? '' : 'rgba(0,212,255,0.16)';
+    }
+    if(typeof showToast === 'function') {
+      showToast(next === 'overlay' ? '◎ Showing the EXPORT renderer — this is what the MP4 will look like'
+              : next === 'diff'    ? '◎ Diff: export canvas at 50% over the editor preview (ghosting = mismatch)'
+              :                      'Live editor preview restored');
+    }
+  };
 })();
+
+// Clear, blocking font error (export refuses to ship the wrong font)
+function _scpFontError(msg) {
+  if(typeof showToast === 'function') showToast('⚠️ Font not loaded — export cancelled');
+  try {
+    const m = document.createElement('div');
+    m.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(0,0,0,.82);' +
+      'backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;';
+    m.innerHTML = '<div style="background:linear-gradient(135deg,#2a1420,#1a1020);border:1px solid rgba(255,77,109,.45);' +
+      'border-radius:14px;padding:24px 26px;max-width:520px;color:#ffe9ee;box-shadow:0 24px 70px rgba(0,0,0,.75);">' +
+      '<div style="font-size:16px;font-weight:900;margin-bottom:10px;">⚠️ Font could not be loaded</div>' +
+      '<div style="font-size:13px;line-height:1.6;white-space:pre-wrap;">' + _seqEsc(msg) + '</div>' +
+      '<button style="margin-top:16px;width:100%;padding:10px;border-radius:8px;border:none;' +
+      'background:#ff4d6d;color:#fff;font-weight:800;cursor:pointer;">OK</button></div>';
+    m.querySelector('button').onclick = () => m.remove();
+    m.addEventListener('click', e => { if(e.target === m) m.remove(); });
+    document.body.appendChild(m);
+  } catch(_) { alert(msg); }
+}
 </script>
 
 <!-- ═══════════════════════════════════════════════════════════════

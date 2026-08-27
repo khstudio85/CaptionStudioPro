@@ -6,6 +6,46 @@
 
 (function(global) {
   'use strict';
+
+  // ═══════════════════════════════════════════
+  // 0. SHARED TYPOGRAPHY PRIMITIVES
+  // Single source of truth for font resolution, used by the layout engine,
+  // the canvas renderer AND the DOM preview (via CaptionEngine.FONT_STYLE_MAP).
+  // Previously each had its own copy, which is how preview and export drifted.
+  // ═══════════════════════════════════════════
+
+  // UI font-style value → { weight, style }.
+  // NOTE: 'condensed' used to be missing here while the DOM preview had it, so
+  // choosing Condensed rendered at 700 in the editor but 400 in the export.
+  const FONT_STYLE_MAP = {
+    'regular':    { weight: 400, style: 'normal' },
+    'bold':       { weight: 700, style: 'normal' },
+    'italic':     { weight: 400, style: 'italic' },
+    'bolditalic': { weight: 700, style: 'italic' },
+    'light':      { weight: 300, style: 'normal' },
+    'medium':     { weight: 500, style: 'normal' },
+    'semibold':   { weight: 600, style: 'normal' },
+    'black':      { weight: 900, style: 'normal' },
+    'thin':       { weight: 100, style: 'normal' },
+    'extralight': { weight: 200, style: 'normal' },
+    'extrabold':  { weight: 800, style: 'normal' },
+    'condensed':  { weight: 700, style: 'normal' }
+  };
+
+  // The ONE canvas font shorthand. Keeps the full family list (so the fallback
+  // chain matches CSS) and the exact weight/style.
+  function fontShorthand(spec, sizePx) {
+    return (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
+           ' ' + sizePx + 'px ' + spec.fontFamily;
+  }
+
+  // Apply the same letter-spacing to a context that drawing uses. Measuring
+  // without it made every word narrower than drawn → wrong wrapping/positions.
+  function applyLetterSpacing(ctx, spec, scale) {
+    if('letterSpacing' in ctx) {
+      ctx.letterSpacing = ((spec.letterSpacing || 0) * (scale || 1)) + 'px';
+    }
+  }
   
   // ═══════════════════════════════════════════
   // 1. CAPTION STYLE SPECIFICATION
@@ -495,11 +535,13 @@
     // Measure single word width
     measureWord(word, spec, targetHeight) {
       const fontSize = spec.getScaledFontSize(targetHeight);
-      const fontFamily = spec.fontFamily.replace(/['"]/g, '').split(',')[0].trim();
-      const fontWeight = spec.fontWeight;
-      const fontStyle = spec.fontStyle;
-      
-      this.ctx.font = fontStyle + ' ' + fontWeight + ' ' + fontSize + 'px "' + fontFamily + '"';
+      // Measure with EXACTLY what we draw with:
+      //  • the full family list (was: first family only → different fallback,
+      //    so metrics diverged from the drawn glyphs)
+      //  • the same letter-spacing (was: omitted → every word measured narrower
+      //    than it renders, shifting positions and changing line wrapping)
+      this.ctx.font = fontShorthand(spec, fontSize);
+      applyLetterSpacing(this.ctx, spec, targetHeight / (spec.canvasHeight || targetHeight));
       return this.ctx.measureText(this.applyCase(word, spec.textTransform)).width;
     }
     
@@ -695,20 +737,9 @@
       
       // Font weight mapping
       const fontStyleValue = g('fontStyleSelect', 'value', 'regular');
-      const fsMap = {
-        'regular':    { weight: 400, style: 'normal' },
-        'bold':       { weight: 700, style: 'normal' },
-        'italic':     { weight: 400, style: 'italic' },
-        'bolditalic': { weight: 700, style: 'italic' },
-        'light':      { weight: 300, style: 'normal' },
-        'medium':     { weight: 500, style: 'normal' },
-        'semibold':   { weight: 600, style: 'normal' },
-        'black':      { weight: 900, style: 'normal' },
-        'thin':       { weight: 100, style: 'normal' },
-        'extralight': { weight: 200, style: 'normal' },
-        'extrabold':  { weight: 800, style: 'normal' }
-      };
-      const fs = fsMap[fontStyleValue] || fsMap.regular;
+      // Shared map — the DOM preview reads the same table, so a weight can never
+      // mean one thing in the editor and another in the export.
+      const fs = FONT_STYLE_MAP[fontStyleValue] || FONT_STYLE_MAP.regular;
       
       // Detect canvas size
       const canvasW = typeof getCanvasWidth === 'function' ? getCanvasWidth() : 1920;
@@ -824,24 +855,48 @@
       this._wctx = this._wc ? this._wc.getContext('2d') : null;
     }
 
-    // ── Font readiness (spec §6: fail loudly, never silently fall back) ──
-    // Returns { ok, family }. Callers should surface !ok before exporting.
+    // ── Font readiness (fail loudly, never silently fall back) ──
+    // Canvas 2D substitutes a fallback SILENTLY, and document.fonts.check() can
+    // report true for a family that canvas won't actually resolve at the wanted
+    // weight. So we (1) load the exact weight/style, (2) wait for fonts.ready,
+    // (3) verify by MEASURING: if the requested family renders identically to a
+    // deliberately bogus family, the browser fell back → report failure.
+    // Returns { ok, family, weight, style, reason }.
     async ensureFont(spec) {
       const family = (spec.fontFamily || '').replace(/['"]/g, '').split(',')[0].trim();
-      if(typeof document === 'undefined' || !document.fonts) return { ok: true, family };
-      const decl = (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
-                   ' ' + Math.max(8, spec.fontSize || 32) + 'px "' + family + '"';
+      const weight = spec.fontWeight || 400;
+      const style  = spec.fontStyle || 'normal';
+      const out = { ok: true, family, weight, style, reason: '' };
+      if(typeof document === 'undefined' || !document.fonts) return out;
+
+      const decl = style + ' ' + weight + ' 64px "' + family + '"';
+      try { await document.fonts.load(decl); } catch(_) {}
+      try { await document.fonts.ready; } catch(_) {}
+
+      if(!document.fonts.check(decl)) {
+        out.ok = false;
+        out.reason = 'not loaded';
+        return out;
+      }
+
+      // Measurement proof: compare against a family that cannot exist.
       try {
-        if(!document.fonts.check(decl)) await document.fonts.load(decl);
-      } catch(_) { /* fall through to the check below */ }
-      const ok = document.fonts.check(decl);
-      return { ok, family };
+        const c = document.createElement('canvas').getContext('2d');
+        const probe = 'AGWMinq 123 — wm';
+        c.font = style + ' ' + weight + ' 64px "' + family + '", monospace';
+        const w1 = c.measureText(probe).width;
+        c.font = style + ' ' + weight + ' 64px "__csp_no_such_font__", monospace';
+        const w2 = c.measureText(probe).width;
+        if(Math.abs(w1 - w2) < 0.01) {
+          out.ok = false;
+          out.reason = 'canvas fell back to a substitute font';
+        }
+      } catch(_) { /* keep the fonts.check() result */ }
+      return out;
     }
 
-    fontString(spec, sizePx) {
-      return (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
-             ' ' + sizePx + 'px ' + spec.fontFamily;
-    }
+    // Delegates to the shared builder so layout + drawing can never diverge
+    fontString(spec, sizePx) { return fontShorthand(spec, sizePx); }
 
     // hex (#rgb/#rrggbb) + alpha → rgba() string
     _rgba(hex, alpha) {
@@ -1068,7 +1123,12 @@
     VideoMetadata,
     StyleCollector,
     CaptionRenderer,
-    version: '1.0.0'
+    // Shared typography primitives — the DOM preview imports these so it and the
+    // export renderer resolve fonts identically (single source of truth).
+    FONT_STYLE_MAP,
+    fontShorthand,
+    applyLetterSpacing,
+    version: '1.1.0'
   };
   
   // Attach to global
