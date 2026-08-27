@@ -19744,6 +19744,17 @@ function _syncLeftPanelHeight() {
   if(!lp || !main || !tl) return;
   const h = tl.getBoundingClientRect().top - main.getBoundingClientRect().top;
   if(h > 60) lp.style.height = Math.round(h) + 'px';
+
+  // The panel now reaches down past the resize handle and the playbar, and both
+  // of those rows span the FULL width of .center starting at x=0 -- so the panel
+  // would cover the play button and the left end of the progress bar, and
+  // .v-resize (z-index 30 vs the panel's 10) would draw its line straight across
+  // the panel. Indent both rows by the panel width so they stay clear of it.
+  const lpW = lp.offsetWidth;
+  const vr  = document.getElementById('vResize');
+  if(vr) vr.style.marginLeft = lpW + 'px';
+  const pz  = document.querySelector('.playbar-zone');
+  if(pz) pz.style.paddingLeft = (lpW + 16) + 'px';   // 16px = the zone's own padding
 }
 
 // Keep it in sync with the preview/timeline resize and window resize
@@ -24383,6 +24394,8 @@ document.addEventListener('DOMContentLoaded', function() {
       // Sync spacer width
       const spacer = document.getElementById('previewLpSpacer');
       if(spacer) spacer.style.width = newW + 'px';
+      // Re-indent the resize handle + playbar to the new panel width
+      if(typeof _syncLeftPanelHeight === 'function') _syncLeftPanelHeight();
       // Re-scale captions font to new preview size
       if(typeof updatePreviewFontSize === 'function') updatePreviewFontSize();
     };
