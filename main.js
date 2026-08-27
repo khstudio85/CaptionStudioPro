@@ -406,12 +406,30 @@ function _cleanupDir(dir) {
 // Shared encode step: composite a frame_%06d.png sequence (transparent caption
 // overlay) from `tmpDir` onto `videoPath` and mux original audio → outputPath.
 // Used by both the legacy array-based export and the streaming export.
-function _encodeCaptionVideo(event, opts) {
+// Does this file actually contain a video stream? Audio-only sources (.aac, .mp3,
+// .wav …) have no [0:v], which made the overlay filtergraph fail with
+// "Stream specifier ':v' … matches no streams / Invalid argument".
+function _hasVideoStream(filePath) {
+  return new Promise((resolve) => {
+    if(!ffprobePath || !filePath) { resolve(true); return; }   // assume video if unknown
+    ffmpeg.ffprobe(filePath, (err, data) => {
+      if(err || !data || !Array.isArray(data.streams)) { resolve(true); return; }
+      resolve(data.streams.some(s => s.codec_type === 'video'));
+    });
+  });
+}
+
+async function _encodeCaptionVideo(event, opts) {
   const {
     tmpDir, videoPath, outputPath,
     width, height, fps = 30, trimIn, trimOut,
-    quality = 'high', useGPU = true
+    quality = 'high', useGPU = true, bgColor = '#000000'
   } = opts;
+
+  // Audio-only project (captions over a solid colour background)?
+  const hasVideo = await _hasVideoStream(videoPath);
+  // FFmpeg wants 0xRRGGBB; accept "#rrggbb" from the UI
+  const ffBg = '0x' + String(bgColor || '#000000').replace('#', '').slice(0, 6);
 
   return new Promise((resolve, reject) => {
     event.sender.send('export-progress', {
@@ -433,12 +451,18 @@ function _encodeCaptionVideo(event, opts) {
     command.input(path.join(tmpDir, 'frame_%06d.png'));
     command.inputOptions(['-framerate', String(fps), '-f', 'image2']);
 
-    // Filter: scale video + overlay captions
-    const filterStr =
-      '[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[bg];' +
-      '[1:v]scale=' + width + ':' + height + '[ov];' +
-      '[bg][ov]overlay=0:0:shortest=1[out]';
+    // Filter: build the background, then overlay the caption PNG sequence.
+    //  • video source  → scale the real video
+    //  • audio-only    → synthesise a solid-colour canvas (there is no [0:v])
+    const filterStr = hasVideo
+      ? '[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[bg];' +
+        '[1:v]scale=' + width + ':' + height + '[ov];' +
+        '[bg][ov]overlay=0:0:shortest=1[out]'
+      : 'color=c=' + ffBg + ':s=' + width + 'x' + height + ':r=' + fps + ',setsar=1[bg];' +
+        '[1:v]scale=' + width + ':' + height + '[ov];' +
+        '[bg][ov]overlay=0:0:shortest=1[out]';
     command.complexFilter(filterStr);
+    console.log('[Export] Source has video:', hasVideo, hasVideo ? '' : '→ solid background ' + ffBg);
 
     const outputOpts = [
       '-map', '[out]',
@@ -524,7 +548,7 @@ ipcMain.handle('export-frames-mode', async (event, options) => {
   const {
     videoPath, outputPath, frameImages,
     resolution, fps = 30, trimIn, trimOut,
-    quality = 'high', useGPU = true
+    quality = 'high', useGPU = true, bgColor = '#000000'
   } = options;
 
   return new Promise(async (resolve, reject) => {
@@ -550,7 +574,7 @@ ipcMain.handle('export-frames-mode', async (event, options) => {
 
       // STEP 2: Encode
       const result = await _encodeCaptionVideo(event, {
-        tmpDir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU
+        tmpDir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU, bgColor
       });
       resolve(result);
     } catch(err) {
@@ -600,7 +624,7 @@ ipcMain.handle('export-encode', async (event, options) => {
   const {
     id, videoPath, outputPath,
     resolution, fps = 30, trimIn, trimOut,
-    quality = 'high', useGPU = true
+    quality = 'high', useGPU = true, bgColor = '#000000'
   } = options;
 
   const sess = exportSessions[id];
@@ -609,7 +633,7 @@ ipcMain.handle('export-encode', async (event, options) => {
   const [width, height] = resolution.split('x').map(Number);
   try {
     const result = await _encodeCaptionVideo(event, {
-      tmpDir: sess.dir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU
+      tmpDir: sess.dir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU, bgColor
     });
     delete exportSessions[id];   // dir already cleaned by _encodeCaptionVideo
     return result;

@@ -19118,7 +19118,10 @@ async function exportStyledVideo(format) {
       trimIn: trimIn,
       trimOut: trimOut,
       quality: exportOptions.quality,
-      useGPU: exportOptions.useGPU
+      useGPU: exportOptions.useGPU,
+      // Used only when the source has NO video stream (audio-only project):
+      // FFmpeg then renders the captions over this solid colour.
+      bgColor: (document.getElementById('bgColor') || {}).value || '#000000'
     });
 
     if(result && result.success) {
