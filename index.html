@@ -8578,6 +8578,25 @@ function startSync() {
 let lastActiveWord  = -1;
 let lastRenderTime  = -1;  // throttle re-renders to only when something changed
 
+// ══════════════════════════════════════════════════════════════════════════
+// _timelineTime()
+// The TIMELINE clock -- the one wordGroups/wordTimes are expressed on.
+// audio.currentTime is SOURCE-file time, and the two diverge by the clip's
+// timelineStart/trimIn the moment anything is split, trimmed or dragged. They
+// match only for a single untrimmed clip starting at 0, which is why this only
+// went wrong after a cut.
+// onTimeUpdate picked the GROUP with this clock while renderGroup picked the
+// ACTIVE WORD with audio.currentTime, so getCurrentWordIndex kept returning -1
+// and the active word never scaled or highlighted.
+// Formula unchanged from what onTimeUpdate always used -- this only makes the
+// two agree.
+// ══════════════════════════════════════════════════════════════════════════
+function _timelineTime() {
+  if(!audio) return 0;
+  if(audioClips.length > 1) return window._virtualT || 0;
+  return Math.max(0, audio.currentTime - (window._mediaEffectiveStart || 0));
+}
+
 function onTimeUpdate() {
   if(!audio) return;
 
@@ -8598,10 +8617,8 @@ function onTimeUpdate() {
   }
   const rawT = audio.currentTime;
 
-  // ── For multi-clip: use virtual timeline time; for single-clip: use rawT ──
-  const tDisplay = audioClips.length > 1
-    ? (window._virtualT || 0)
-    : Math.max(0, rawT - (window._mediaEffectiveStart || 0));
+  // Timeline time — the clock the captions live on (see _timelineTime).
+  const tDisplay = _timelineTime();
 
   // Single-clip: keep _virtualT in sync too (for consistency when switching modes)
   if(audioClips.length <= 1) window._virtualT = tDisplay;
@@ -9311,14 +9328,13 @@ function seekFromBar(e) {
   if(!audio || !audio.duration) return;
   const rect = document.getElementById('progressWrap').getBoundingClientRect();
   const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  // Map progress bar to effective range (not full raw duration)
-  const effStart = window._mediaEffectiveStart || 0;
-  const effEnd   = window._mediaEffectiveEnd   || audio.duration;
-  const effDur   = effEnd - effStart;
-  audio.currentTime = effStart + pct * effDur;
-  // Force re-render even if landing on same group/word
-  currentGroup = -2; lastActiveWord = -2;
-  onTimeUpdate();
+  // The bar is DRAWN in timeline units (onTimeUpdate: tDisplay / getContentDur),
+  // so it has to be READ in timeline units too. It used to map the click onto
+  // the source-file range and assign audio.currentTime directly, which left
+  // _virtualT stale — after a cut the playhead jumped back on the next tick.
+  const dur = (typeof getContentDur === 'function' ? getContentDur() : 0) || audio.duration || 1;
+  currentGroup = -2; lastActiveWord = -2;   // force a re-render even on the same word
+  seekTimelineTo(pct * dur);
 }
 
 function barHover(e) {
@@ -9890,6 +9906,21 @@ function seekFromTimeline(e) {
   const dur    = getTLDur();
   // t = virtual timeline time (0-based, covers all clips)
   const t      = Math.max(0, Math.min(dur, (px / totalW) * dur));
+  seekTimelineTo(t);
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// seekTimelineTo(t) -- t is TIMELINE time (0-based, spanning every clip).
+// Extracted verbatim from seekFromTimeline so the ruler is no longer the only
+// seek that works. Once there are 2+ clips, window._virtualT is what
+// onTimeUpdate reads, so a seek that sets only audio.currentTime is silently
+// undone on the next tick -- the playhead snapped straight back to where it
+// was. That is what happened to the playbar and to the caption-list jump
+// buttons after any cut.
+// ══════════════════════════════════════════════════════════════════════════
+function seekTimelineTo(t) {
+  if(!audio) return;
+  t = Math.max(0, t);
 
   // Store virtualT so playhead can move to empty spaces too
   window._virtualT = t;
@@ -10371,7 +10402,9 @@ function renderGroup(idx) {
   disp.style.transition  = '';
   const group = wordGroups[idx];
   const s = getStyles();
-  const t = audio ? audio.currentTime : 0;
+  // TIMELINE time, not audio.currentTime — the group was chosen on this clock,
+  // so the active word inside it has to be chosen on the same one.
+  const t = _timelineTime();
   const activeWordIdx = getCurrentWordIndex(t, group);
 
   // ✅ RTL SUPPORT: Detect Urdu/Arabic/Hebrew and set dir="rtl" on the container.
@@ -14661,7 +14694,12 @@ function saveInlineEdit(i) {
 }
 
 function seekTo(t) {
-  if(audio && !isNaN(t)) { audio.currentTime = t; onTimeUpdate(); }
+  // t is a caption start time, i.e. TIMELINE time. Assigning it straight to
+  // audio.currentTime treated it as source time and skipped _virtualT, so this
+  // jumped to the wrong place (and bounced back) on any cut/trimmed timeline.
+  if(!audio || isNaN(t)) return;
+  currentGroup = -2; lastActiveWord = -2;
+  seekTimelineTo(t);
 }
 
 // ── Search & Replace ──
@@ -24915,6 +24953,25 @@ document.addEventListener('keydown', ev => {
 
     ev.preventDefault(); ev.stopPropagation();
 
+    // ── Which TRACK was clicked? ────────────────────────────────────────────
+    // The cut used to be chosen from the time alone, so whenever an audio clip
+    // spanned t it was cut -- clicking the Captions track cut the audio
+    // underneath it instead of the caption. Decide by the row the pointer is
+    // actually on, measured from the track's own rect (not ev.target, whose
+    // hit-testing is unreliable under the overlapping playhead/marker layers).
+    const _capTrack = document.getElementById('tlCaptionTrack');
+    if(_capTrack) {
+      const cr = _capTrack.getBoundingClientRect();
+      if(cr.height > 0 && ev.clientY >= cr.top && ev.clientY <= cr.bottom) {
+        _razorCutCaptionsAt(t);
+        // Back to Select, same as the clip path -- while the razor is active the
+        // mousedown handlers bail out, so the pieces can't be selected/deleted.
+        if(typeof activateSelectTool === 'function') activateSelectTool();
+        requestAnimationFrame(_buildGapIndicators);
+        return;
+      }
+    }
+
     // ✅ FIX: Find the clip from timeline position t — NOT from ev.target.closest().
     // ev.target hit-testing is unreliable (DOM stacking order can return wrong clip).
     // Always use time-based lookup: find the clip that spans time t on the timeline.
@@ -24955,8 +25012,9 @@ document.addEventListener('keydown', ev => {
 
 // ── Cut captions at t when no clip is present ──
 function _razorCutCaptionsAt(t) {
-  if(!wordGroups || !wordGroups.length) return;
-  saveHistory();
+  if(!wordGroups || !wordGroups.length) { showToast('✂ No captions to cut'); return; }
+  // Work out the split first, then commit -- saveHistory() used to run even when
+  // the click hit a gap between captions, filling the undo stack with no-ops.
   let didCut = false;
   const newGroups = [];
   for(const g of wordGroups) {
@@ -24972,9 +25030,19 @@ function _razorCutCaptionsAt(t) {
     didCut = true;
   }
   if(didCut) {
+    saveHistory();
     wordGroups = newGroups;
     buildTimeline();
+    // The group array just changed shape, so currentGroup points somewhere else
+    // now and the caption list is stale. Without these the preview kept showing
+    // the pre-cut group and the list never split.
+    if(typeof refreshCaptionList === 'function') refreshCaptionList();
+    currentGroup = -2; lastActiveWord = -2;
+    if(typeof onTimeUpdate === 'function') onTimeUpdate();
     showToast('✂ Caption cut at ' + (typeof fmt === 'function' ? fmt(t) : t.toFixed(2)+'s'));
+  } else {
+    // Say so, rather than looking like the razor did nothing.
+    showToast('✂ No caption spans that point — click on a caption block');
   }
 }
 
