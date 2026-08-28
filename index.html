@@ -10297,6 +10297,57 @@ function shouldUseRTL(words) {
   return isRTLLang() || isRTLText(words);
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// _chipBaselineY(fontStr, lineHeightPx)
+// Where the text BASELINE sits inside a .word-chip box, measured from the box
+// top. Needed because transform-origin:'center bottom' anchors the chip's BOX
+// bottom, and the baseline is NOT there -- with line-height:1 the box bottom
+// falls (lineHeight - ascent + descent)/2 BELOW the baseline. Scaling from the
+// box bottom therefore lifts the glyphs off the shared baseline, so an enlarged
+// active word floated upward as it grew.
+//
+//   line box height  L = line-height
+//   content area     A + D  (font ascent + descent)
+//   half-leading     (L - (A + D)) / 2
+//   baseline         half-leading + A
+//
+// The canvas export path anchors the same point (ctx.translate(0, lm.baseline)
+// in CaptionRenderer.renderFrame), so preview and export agree.
+// Cached: this is called every frame while a caption is on screen.
+// ══════════════════════════════════════════════════════════════════════════
+let _chipBlCtx = null;
+const _chipBlCache = new Map();
+function _chipBaselineY(fontStr, lineHeightPx) {
+  const key = fontStr + '|' + lineHeightPx;
+  const hit = _chipBlCache.get(key);
+  if(hit !== undefined) return hit;
+  let y = lineHeightPx;                       // fallback = box bottom (old behaviour)
+  try {
+    if(!_chipBlCtx) _chipBlCtx = document.createElement('canvas').getContext('2d');
+    _chipBlCtx.font = fontStr;
+    const m = _chipBlCtx.measureText('Hxg');
+    const A = m.fontBoundingBoxAscent, D = m.fontBoundingBoxDescent;
+    if(Number.isFinite(A) && Number.isFinite(D) && (A + D) > 0) {
+      y = (lineHeightPx - (A + D)) / 2 + A;
+    }
+  } catch(_) {}
+  if(_chipBlCache.size > 256) _chipBlCache.clear();
+  _chipBlCache.set(key, y);
+  return y;
+}
+
+// The canvas font string for the caption's current font, resolved through the
+// SAME map + shorthand the export renderer uses.
+function _chipFontStr(s, sizePx) {
+  const CE  = window.CaptionEngine;
+  const map = (CE && CE.FONT_STYLE_MAP) || null;
+  const fm  = (map && map[s.fontStyle]) || { weight: 700, style: 'normal' };
+  const spec = { fontStyle: fm.style, fontWeight: fm.weight, fontFamily: s.fontFamily };
+  return (CE && CE.fontShorthand)
+    ? CE.fontShorthand(spec, sizePx)
+    : fm.style + ' ' + fm.weight + ' ' + sizePx + 'px ' + s.fontFamily;
+}
+
 function renderGroup(idx) {
   const disp = document.getElementById('captionDisplay');
   if(!disp) return;
@@ -10660,12 +10711,18 @@ function renderGroup(idx) {
       disp.style.columnGap =
         Math.max(0, _baseGap + (s.wordGap + _gapExtra) * _fontScale) + 'px';
     }
+    // Anchor on the text BASELINE, not the chip's box bottom. 'center bottom'
+    // pins the box bottom, which sits below the baseline by half the leading
+    // plus the descent -- so scaling from there lifted the glyphs off the line
+    // the other words sit on (the active word drifted upward as it grew).
+    // Chips all share one font/size/line-height, so one value serves them all.
+    const _blY = _chipBaselineY(_chipFontStr(s, _scaledFontSize), _scaledFontSize);
     disp.querySelectorAll('.word-chip').forEach((chip, i) => {
       const isActive  = i === activeWordIdx;
       const isSpoken  = i < activeWordIdx;
       chip.style.opacity   = isActive ? (p3.activeOpacity/100) : isSpoken ? (p3.spokenOpacity/100) : (p3.dimOpacity/100);
       chip.style.fontSize  = _scaledFontSize + 'px';   // ALWAYS the base size
-      chip.style.transformOrigin = 'center bottom';    // grow upward, bottom fixed
+      chip.style.transformOrigin = '50% ' + _blY + 'px';  // baseline pinned, grows upward
       chip.style.transform = isActive
         ? `scale(${(p3.activeScale/100) * sizeMul})`
         : 'scale(1)';
