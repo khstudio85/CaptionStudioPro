@@ -37,6 +37,7 @@
       "node_modules/@ffprobe-installer/**"
     ],
     "win": {
+      "icon": "icon.ico",
       "target": [
         {
           "target": "nsis",
