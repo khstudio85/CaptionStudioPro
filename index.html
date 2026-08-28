@@ -1800,63 +1800,6 @@ body.razor-tool-active #timelineScroll .tl-audio-clip { cursor: crosshair !impor
    Virtual updates, undo/redo UI, minimap, smooth everything
    ════════════════════════════════════════════════════════════ */
 
-/* ── Global Undo/Redo pill — always visible ── */
-#tlUndoRedoPill {
-  position: fixed;
-  bottom: 52px;     /* above the shortcut bar */
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  z-index: 200;
-  background: rgba(14,14,26,0.92);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 30px;
-  padding: 3px 4px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-  backdrop-filter: blur(12px);
-  pointer-events: all;
-  transition: opacity 0.2s;
-}
-#tlUndoRedoPill.hidden { opacity: 0; pointer-events: none; }
-
-.ur-pill-btn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 700;
-  font-family: var(--font);
-  padding: 5px 14px;
-  border-radius: 24px;
-  border: none;
-  background: transparent;
-  color: var(--text2);
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-  white-space: nowrap;
-}
-.ur-pill-btn:not(:disabled):hover {
-  background: rgba(255,255,255,0.09);
-  color: var(--text);
-}
-.ur-pill-btn:disabled {
-  opacity: 0.28;
-  cursor: not-allowed;
-}
-.ur-pill-sep {
-  width: 1px; height: 18px;
-  background: rgba(255,255,255,0.1);
-}
-.ur-pill-count {
-  font-size: 9px;
-  font-weight: 800;
-  color: #00e5a0;
-  min-width: 18px;
-  text-align: center;
-}
-
 /* ── Timeline minimap (zoomable overview) ── */
 #tlMinimap {
   height: 22px;
@@ -4162,6 +4105,51 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
   color: var(--text3);
 }
 
+/* ── Searchable font combobox (sits on top of the hidden #fontFamily select) ── */
+.ffc-wrap { position: relative; width: 100%; }
+.ffc-input {
+  width: 100%;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 22px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  color: var(--text);
+  outline: none;
+  cursor: text;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ffc-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(108,71,255,0.18); }
+.ffc-input::placeholder { color: var(--text3); font-weight: 500; font-family: var(--font); }
+.ffc-caret {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  font-size: 9px; color: var(--text3); pointer-events: none;
+}
+.ffc-list {
+  display: none;
+  position: absolute; left: 0; right: 0; top: calc(100% + 3px);
+  max-height: 280px; overflow-y: auto;
+  background: var(--bg2); border: 1px solid var(--border2, var(--border));
+  border-radius: 9px; padding: 3px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.55);
+  z-index: 400;
+}
+.ffc-list.open { display: block; }
+.ffc-group {
+  font-size: 9px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text3); padding: 6px 8px 3px;
+}
+.ffc-opt {
+  padding: 5px 8px; border-radius: 6px; font-size: 12px;
+  color: var(--text); cursor: pointer; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ffc-opt.on   { background: rgba(108,71,255,0.22); }
+.ffc-opt.cur  { color: var(--accent2, #9d7eff); }
+.ffc-opt:hover{ background: rgba(108,71,255,0.14); }
+.ffc-empty { padding: 10px 8px; font-size: 11px; color: var(--text3); }
+
 /* ── Premium select ── */
 .tp-select {
   width: 100%;
@@ -5219,10 +5207,6 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
   pointer-events: none;
 }
 
-/* ── Split / Del Range btn enable state ── */
-#splitClipBtn:not([disabled]):hover { border-color: #00c8ff !important; box-shadow: 0 0 10px rgba(0,200,255,0.3); }
-#delRangeBtn:not([disabled]):hover  { border-color: var(--red) !important; box-shadow: 0 0 10px rgba(255,77,109,0.3); }
-#splitClipBtn[disabled], #delRangeBtn[disabled] { opacity: 0.35; cursor: not-allowed; }
 
 /* ── Format support toast ── */
 .fmt-warn-toast {
@@ -5662,9 +5646,6 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
     <button class="tb-btn import-btn" onclick="openImportModal()" ondblclick="event.stopPropagation()">📥 Import SRT / TXT</button>
     <button class="tb-btn" onclick="openTranslateModal()" title="Captions ko doosri language mein translate karo" style="background:linear-gradient(135deg,#1a2a3a,#1e3548);border-color:rgba(0,200,255,0.35);color:#00c8ff;font-weight:700;">🌐 Translate</button>
     <button class="tb-btn auto-cap" id="autoCaptionBtn" onclick="openAutoCaptionModal()" disabled>🤖 Auto Caption</button>
-    <button class="tb-btn primary" onclick="document.getElementById('audioFile').click()">+ Video / Audio</button>
-    <button class="tb-btn" id="splitClipBtn" onclick="splitClipAtPlayhead()" title="Split clip at playhead (S key)" style="background:linear-gradient(135deg,#1a2a3a,#1e3548);border-color:rgba(0,200,255,0.35);color:#00c8ff;font-weight:700;" disabled>✂️ Split</button>
-    <button class="tb-btn" id="delRangeBtn" onclick="splitAndDeleteRange()" title="Split+Delete IN→OUT range (Premiere style)" style="background:linear-gradient(135deg,#3a1a1a,#481e1e);border-color:rgba(255,77,109,0.35);color:#ff4d6d;font-weight:700;" disabled>⌫ Del Range</button>
   </div>
 </div>
 
@@ -6550,7 +6531,17 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
         <div class="tp-two-col" style="margin-bottom:7px;">
           <div class="tp-field-group">
             <span class="tp-field-label">Font Family</span>
-            <select id="fontFamily" onchange="updateStyle();updateFontWeights(this.value)" class="tp-select">
+            <!-- Searchable font picker. The native <select id="fontFamily"> below stays
+                 in the DOM (hidden) as the single source of truth, so every existing
+                 reader/writer of its .value keeps working untouched. -->
+            <div class="ffc-wrap" id="ffcWrap">
+              <input type="text" id="ffcInput" class="ffc-input" autocomplete="off" spellcheck="false"
+                     placeholder="Type to search fonts…" aria-label="Font family"
+                     onfocus="ffcOpen()" oninput="ffcFilter()" onkeydown="ffcKey(event)">
+              <span class="ffc-caret">▾</span>
+              <div class="ffc-list" id="ffcList"></div>
+            </div>
+            <select id="fontFamily" onchange="updateStyle();updateFontWeights(this.value)" class="tp-select" style="display:none;">
               <optgroup label="── Google Fonts ──">
                 <option value="'Montserrat',sans-serif">Montserrat</option>
                 <option value="'Bebas Neue',sans-serif">Bebas Neue</option>
@@ -17318,14 +17309,6 @@ function updateUndoRedoBtns() {
   const r = document.getElementById('redoBtn');
   if(u) u.disabled = undoStack.length === 0;
   if(r) r.disabled = redoStack.length === 0;
-
-  // Floating pill buttons
-  const pu = document.getElementById('pillUndoBtn');
-  const pr = document.getElementById('pillRedoBtn');
-  const pc = document.getElementById('pillUndoCount');
-  if(pu) pu.disabled = undoStack.length === 0;
-  if(pr) pr.disabled = redoStack.length === 0;
-  if(pc) pc.textContent = undoStack.length;
 }
 
 // ── Minimap: lightweight overview of all layers ──
@@ -17428,15 +17411,6 @@ function refreshCaptionList() {
 document.addEventListener('DOMContentLoaded', () => {
   updateUndoRedoBtns();
   updateMinimap();
-
-  // Show/hide pill based on history
-  const pill = document.getElementById('tlUndoRedoPill');
-  if(pill) {
-    setInterval(() => {
-      const has = undoStack.length > 0 || redoStack.length > 0;
-      pill.classList.toggle('hidden', !has);
-    }, 400);
-  }
 });
 
 // ══════════════════════════════════════════════════════════
@@ -17654,6 +17628,7 @@ function restoreUIState(ui) {
   }
   sv('fontFamily',       ui.fontFamily);
   sv('fontStyleSelect',  ui.fontStyle);
+  if(typeof ffcSync === 'function') ffcSync();   // mirror into the font search box
   // Sync weight dropdown options for restored font
   if(ui.fontFamily && typeof updateFontWeights === 'function') {
     updateFontWeights(ui.fontFamily);
@@ -19858,6 +19833,190 @@ function applyFontStyle() {
   updateTextPreview();
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// SEARCHABLE FONT PICKER  (#ffcInput / #ffcList)
+// The native <select id="fontFamily"> remains the source of truth — the rest
+// of the app reads and writes its .value, and project save/restore goes
+// through it. This is only an input layer on top of it:
+//   · type          → filter (prefix matches rank first)
+//   · ArrowUp/Down  → move the highlight (Home/End jump, PageUp/Dn step 8)
+//   · Enter         → apply
+//   · Esc           → cancel, restore what was selected
+// The option list is re-read from the <select> on every open, so the hundreds
+// of fonts that loadSystemFonts() appends later appear with no extra wiring.
+// ══════════════════════════════════════════════════════════════════════════
+let _ffcAll  = [];   // [{value,label,group}] — snapshot of the <select>
+let _ffcView = [];   // current filtered view
+let _ffcIdx  = -1;   // highlight index into _ffcView
+let _ffcOpen = false;
+
+function _ffcSel()  { return document.getElementById('fontFamily'); }
+function _ffcList() { return document.getElementById('ffcList'); }
+function _ffcInp()  { return document.getElementById('ffcInput'); }
+
+function _ffcCollect() {
+  const sel = _ffcSel();
+  _ffcAll = [];
+  if(!sel) return;
+  sel.querySelectorAll('option').forEach(o => {
+    if(!o.value) return;
+    const og = o.parentElement && o.parentElement.tagName === 'OPTGROUP' ? o.parentElement : null;
+    _ffcAll.push({
+      value: o.value,
+      label: (o.textContent || '').trim(),
+      group: og ? (og.label || '').replace(/[\u2500\-]+/g, '').trim() : ''
+    });
+  });
+}
+
+// Mirror the <select>'s current value into the input box.
+function ffcSync() {
+  const sel = _ffcSel(), inp = _ffcInp();
+  if(!sel || !inp) return;
+  const o = sel.options[sel.selectedIndex];
+  inp.value = o ? (o.textContent || '').trim() : '';
+  inp.style.fontFamily = sel.value || 'inherit';
+}
+
+function _ffcRender() {
+  const list = _ffcList();
+  if(!list) return;
+  if(!_ffcView.length) {
+    list.innerHTML = '<div class="ffc-empty">No font matches that name.</div>';
+    return;
+  }
+  const cur = (_ffcSel() || {}).value;
+  let html = '', group = null;
+  _ffcView.forEach((it, i) => {
+    if(it.group !== group) { group = it.group; if(group) html += '<div class="ffc-group">' + group + '</div>'; }
+    html += '<div class="ffc-opt' + (i === _ffcIdx ? ' on' : '') + (it.value === cur ? ' cur' : '') + '"'
+          + ' data-i="' + i + '" style="font-family:' + it.value.replace(/"/g, '&quot;') + '">'
+          + it.label + '</div>';
+  });
+  list.innerHTML = html;
+}
+
+function _ffcScrollTo() {
+  const list = _ffcList();
+  if(!list) return;
+  const el = list.querySelector('.ffc-opt.on');
+  if(!el) return;
+  const t = el.offsetTop, b = t + el.offsetHeight;
+  if(t < list.scrollTop) list.scrollTop = t - 4;
+  else if(b > list.scrollTop + list.clientHeight) list.scrollTop = b - list.clientHeight + 4;
+}
+
+function ffcFilter() {
+  const inp = _ffcInp();
+  const q = (inp ? inp.value : '').trim().toLowerCase();
+  if(!q) {
+    _ffcView = _ffcAll.slice();
+  } else {
+    // Prefix matches first, then any substring — grouped labels are preserved
+    // within each band so the headers still make sense.
+    const pre = [], sub = [];
+    _ffcAll.forEach(it => {
+      const l = it.label.toLowerCase();
+      if(l.startsWith(q)) pre.push(it);
+      else if(l.includes(q)) sub.push(it);
+    });
+    _ffcView = pre.concat(sub);
+  }
+  const cur = (_ffcSel() || {}).value;
+  _ffcIdx = Math.max(0, _ffcView.findIndex(it => it.value === cur));
+  _ffcRender();
+  _ffcScrollTo();
+}
+
+function ffcOpen() {
+  const list = _ffcList(), inp = _ffcInp();
+  if(!list || !inp) return;
+  _ffcCollect();          // pick up any fonts added since last open
+  inp.select();           // typing replaces the shown name
+  _ffcOpen = true;
+  list.classList.add('open');
+  ffcFilter();
+}
+
+function ffcClose(restore) {
+  const list = _ffcList();
+  _ffcOpen = false;
+  if(list) list.classList.remove('open');
+  if(restore !== false) ffcSync();
+}
+
+function ffcPick(value) {
+  const sel = _ffcSel();
+  if(!sel) return;
+  sel.value = value;
+  // Assigning .value does NOT fire change — dispatch it so the inline
+  // onchange (updateStyle + updateFontWeights) runs exactly as it would
+  // have for a click on the native select.
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  ffcSync();
+  ffcClose(false);
+  const inp = _ffcInp();
+  if(inp) inp.blur();
+}
+
+function ffcKey(e) {
+  const k = e.key;
+  if(k === 'ArrowDown' || k === 'ArrowUp' || k === 'PageDown' || k === 'PageUp' || k === 'Home' || k === 'End') {
+    if(!_ffcOpen) { ffcOpen(); e.preventDefault(); return; }
+    const step = (k === 'ArrowDown') ? 1 : (k === 'ArrowUp') ? -1
+               : (k === 'PageDown') ? 8 : (k === 'PageUp') ? -8 : 0;
+    if(k === 'Home')      _ffcIdx = 0;
+    else if(k === 'End')  _ffcIdx = _ffcView.length - 1;
+    else                  _ffcIdx = Math.min(_ffcView.length - 1, Math.max(0, _ffcIdx + step));
+    _ffcRender();
+    _ffcScrollTo();
+    e.preventDefault();
+    return;
+  }
+  if(k === 'Enter') {
+    if(_ffcOpen && _ffcView[_ffcIdx]) ffcPick(_ffcView[_ffcIdx].value);
+    e.preventDefault();
+    return;
+  }
+  if(k === 'Escape') {
+    ffcClose();                 // restores the input text
+    const inp = _ffcInp();
+    if(inp) inp.blur();
+    e.preventDefault();
+    e.stopPropagation();        // don't let Esc also exit fullscreen etc.
+    return;
+  }
+  // Keystrokes must not reach the app-wide shortcut handler (S = split,
+  // V = select tool, Space = play, Delete = delete clip ...).
+  e.stopPropagation();
+}
+
+(function ffcInit() {
+  const wire = () => {
+    const list = _ffcList();
+    if(!list) return;
+    list.addEventListener('mousedown', e => {
+      const opt = e.target.closest('.ffc-opt');
+      if(!opt) return;
+      e.preventDefault();                     // keep focus, avoid blur-close race
+      const it = _ffcView[+opt.dataset.i];
+      if(it) ffcPick(it.value);
+    });
+    // Click anywhere else closes and restores the shown name
+    document.addEventListener('mousedown', e => {
+      if(!_ffcOpen) return;
+      const wrap = document.getElementById('ffcWrap');
+      if(wrap && !wrap.contains(e.target)) ffcClose();
+    });
+    // Keep the box in step when anything else changes the <select>
+    const sel = _ffcSel();
+    if(sel) sel.addEventListener('change', ffcSync);
+    ffcSync();
+  };
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
+  else wire();
+})();
+
 // ── Load PC Fonts via queryLocalFonts API ──
 async function loadPCFonts() {
   const btn = document.getElementById('loadFontsBtn');
@@ -21160,6 +21319,7 @@ function resetTextProps() {
   // ── Font ──
   const ff = document.getElementById('fontFamily');
   if(ff) { ff.value = "'Montserrat',sans-serif"; updateFontWeights(ff.value); }
+  if(typeof ffcSync === 'function') ffcSync();   // mirror into the font search box
   const fs = document.getElementById('fontStyleSelect');
   if(fs) fs.value = 'bold';
 
@@ -25833,19 +25993,6 @@ function exportEDL() {
 <!-- ── DRAG TIME TOOLTIP ── -->
 <div id="tlDragTooltip"></div>
 
-<!-- ══ FLOATING UNDO / REDO PILL ══ -->
-<div id="tlUndoRedoPill">
-  <button class="ur-pill-btn" id="pillUndoBtn" onclick="undoAction()" disabled title="Undo (Ctrl+Z)">
-    ↩ Undo
-  </button>
-  <span class="ur-pill-sep"></span>
-  <span class="ur-pill-count" id="pillUndoCount">0</span>
-  <span class="ur-pill-sep"></span>
-  <button class="ur-pill-btn" id="pillRedoBtn" onclick="redoAction()" disabled title="Redo (Ctrl+Shift+Z)">
-    Redo ↪
-  </button>
-</div>
-
 <!-- ══ RIGHT-CLICK CONTEXT MENU ══ -->
 <div id="tlContextMenu">
   <div class="ctx-header">
@@ -26857,12 +27004,6 @@ function _vetUpdateAll() {
   _vetBtn('vetBtnW',        hasMedia);
   _vetBtn('vetBtnDelRange', hasInOut);
   _vetBtn('vetBtnDelClip',  hasClip);
-
-  // Also update the topbar Split/DelRange buttons
-  const sb = document.getElementById('splitClipBtn');
-  const db = document.getElementById('delRangeBtn');
-  if(sb) sb.disabled = !(hasMedia && hasClip);
-  if(db) db.disabled = !hasInOut;
 
   // Sync mini tool strip buttons
   const mq = document.getElementById('miniTrimQ');
