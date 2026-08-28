@@ -4186,25 +4186,6 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
   gap: 5px;
 }
 .tp-font-row .tp-field-group { flex: 1; min-width: 0; }
-.tp-pc-btn {
-  font-size: 11px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg3);
-  color: var(--text3);
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-  flex-shrink: 0;
-  height: 31px;
-  display: flex;
-  align-items: center;
-}
-.tp-pc-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent2);
-}
 
 /* ── Size row ── */
 .tp-size-row {
@@ -6576,12 +6557,6 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
               </optgroup>
               <optgroup label="── PC Fonts ──" id="pcFontGroup" style="display:none;"></optgroup>
             </select>
-            <button type="button" id="loadPcFontsBtn" onclick="loadSystemFonts()"
-              style="margin-top:6px;width:100%;cursor:pointer;font-size:11px;font-weight:600;
-                     padding:6px 8px;border-radius:6px;border:1px dashed var(--border2,#3a3a4a);
-                     background:var(--bg3,#1c1c26);color:var(--accent2,#9d7eff);">
-              ＋ Load all fonts installed on this PC
-            </button>
           </div>
           <div class="tp-field-group">
             <span class="tp-field-label">Weight</span>
@@ -6601,10 +6576,6 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
             </select>
           </div>
         </div>
-        <!-- PC Fonts button -->
-        <button class="tp-pc-btn" onclick="loadPCFonts()" id="loadFontsBtn" title="Load PC fonts" style="font-size:10px;">
-          🖥️ Load PC Fonts
-        </button>
       </div>
 
       <!-- Font Size row — SINGLE slider + number input -->
@@ -20074,53 +20045,6 @@ function ffcKey(e) {
   else wire();
 })();
 
-// ── Load PC Fonts via queryLocalFonts API ──
-async function loadPCFonts() {
-  const btn = document.getElementById('loadFontsBtn');
-  const group = document.getElementById('pcFontGroup');
-  if(!group) return;
-
-  if(!('queryLocalFonts' in window)) {
-    showToast('⚠️ Browser mein Local Fonts API support nahi — Chrome 103+ use karo');
-    // Fallback: common Windows/Mac fonts
-    const fallback = [
-      'Calibri','Cambria','Candara','Consolas','Constantia','Corbel',
-      'Franklin Gothic Medium','Gabriola','Gill Sans MT','Lucida Console',
-      'Lucida Sans Unicode','Microsoft Sans Serif','Palatino Linotype',
-      'Segoe Print','Segoe Script','Segoe UI','Tahoma','Trebuchet MS','Verdana',
-      'Wingdings','Century','Century Gothic','Book Antiqua','Bookman Old Style',
-      'Garamond','Haettenschweiler','Impact','Narrow','Wide Latin',
-    ];
-    group.style.display = '';
-    group.setAttribute('label','── PC Fonts (Common) ──');
-    group.innerHTML = fallback.map(f => `<option value="${f},sans-serif">${f}</option>`).join('');
-    showToast(`✅ ${fallback.length} common fonts loaded`);
-    return;
-  }
-
-  btn.textContent = '⏳ Loading...';
-  btn.disabled = true;
-  try {
-    const fonts = await queryLocalFonts();
-    // Deduplicate by family name
-    const families = [...new Set(fonts.map(f => f.family))].sort();
-    group.innerHTML = families.map(f =>
-      `<option value="${f.includes(' ') ? "'" + f + "'" : f},sans-serif">${f}</option>`
-    ).join('');
-    group.style.display = '';
-    group.setAttribute('label', `── PC Fonts (${families.length}) ──`);
-    btn.textContent = `✅ ${families.length} Fonts`;
-    showToast(`✅ ${families.length} PC fonts loaded!`);
-  } catch(err) {
-    btn.textContent = '🖥️ PC Fonts';
-    btn.disabled = false;
-    if(err.name === 'NotAllowedError') {
-      showToast('⚠️ Permission denied — browser settings mein fonts allow karo');
-    } else {
-      showToast('⚠️ Fonts load nahi hue: ' + err.message);
-    }
-  }
-}
 
 // ══════ CANVAS MODAL ══════
 let currentPreset = { ratio: '9:16', res: '1080x1920', fps: 30 };
@@ -21296,6 +21220,43 @@ const _FONT_WEIGHT_MAP = {
   "'Russo One',sans-serif":   ['regular'],
   "'Nunito',sans-serif":      ['extrabold','black'],
 };
+// Weights actually installed on this PC, per family. Filled by
+// loadSystemFonts() from queryLocalFonts(); keyed by _famKey().
+const _PC_FONT_WEIGHTS = new Map();
+
+// Compare font families by NAME only. The same family reaches us spelled three
+// ways -- "Arial,sans-serif" (hardcoded option), "Arial, sans-serif" (generated
+// option) and "'Arial', sans-serif" -- so every lookup has to normalise first.
+function _famKey(cssValue) {
+  return String(cssValue || '').split(',')[0].replace(/['"]/g, '').trim().toLowerCase();
+}
+
+// A FontData.style string ("Bold", "SemiBold Italic", "Condensed", "Ultra
+// Light", ...) -> the weight keys this app can represent. Longer names are
+// tested first so "ExtraBold" is not read as "Bold" and "ExtraLight" not as
+// "Light". Italic beyond bold-italic has no key in this app's model, so those
+// faces contribute their base weight plus plain Italic.
+function _pcStyleToKeys(style) {
+  const t = String(style || '').toLowerCase().replace(/[\s_-]+/g, '');
+  const keys = [];
+  const italic = /italic|oblique/.test(t);
+  let w;
+  if      (/extrabold|ultrabold/.test(t)) w = 'extrabold';
+  else if (/extralight|ultralight/.test(t)) w = 'extralight';
+  else if (/semibold|demibold|demi/.test(t)) w = 'semibold';
+  else if (/black|heavy/.test(t))         w = 'black';
+  else if (/thin|hairline/.test(t))       w = 'thin';
+  else if (/light/.test(t))               w = 'light';
+  else if (/medium/.test(t))              w = 'medium';
+  else if (/bold/.test(t))                w = 'bold';
+  else                                    w = 'regular';   // Regular/Book/Roman/blank
+  keys.push(w);
+  if(italic) keys.push(w === 'bold' ? 'bolditalic' : 'italic');
+  // Condensed is a WIDTH, but this app carries it as a weight key.
+  if(/condensed|narrow/.test(t)) keys.push('condensed');
+  return keys;
+}
+
 const _ALL_WEIGHT_OPTS = [
   {value:'regular',    label:'Regular'},
   {value:'bold',       label:'Bold'},
@@ -21314,25 +21275,39 @@ const _ALL_WEIGHT_OPTS = [
 // Enumerate fonts installed on this PC (Local Font Access API) and add them to
 // the font dropdown. Installed fonts render in both the DOM preview and the
 // canvas export (Chromium resolves them by family name).
-async function loadSystemFonts() {
-  const btn = document.getElementById('loadPcFontsBtn');
+async function loadSystemFonts(opts) {
+  const silent = !!(opts && opts.silent);
   if(typeof window.queryLocalFonts !== 'function') {
-    showToast('⚠️ System-font access not available in this build');
+    if(!silent) showToast('\u26a0\ufe0f System-font access not available in this build');
     return;
   }
-  const orig = btn ? btn.textContent : '';
   try {
-    if(btn) { btn.textContent = '⏳ Loading system fonts…'; btn.disabled = true; }
     const fonts = await window.queryLocalFonts();   // may prompt for permission
     const grp = document.getElementById('pcFontGroup');
     if(!grp) return;
+
+    // One entry per FAMILY for the picker, plus the set of weights that family
+    // actually ships — read off each face's style ("Bold", "SemiBold Italic",
+    // "Condensed", ...). Without this the Weight dropdown offered all 12
+    // options for every PC font, most of which the font does not contain.
     const seen = new Set();
     const families = [];
+    _PC_FONT_WEIGHTS.clear();
     for(const f of fonts) {
       const fam = f.family;
-      if(!fam || seen.has(fam)) continue;
-      seen.add(fam); families.push(fam);
+      if(!fam) continue;
+      if(!seen.has(fam)) { seen.add(fam); families.push(fam); }
+      const key = _famKey(fam);
+      let set = _PC_FONT_WEIGHTS.get(key);
+      if(!set) { set = new Set(); _PC_FONT_WEIGHTS.set(key, set); }
+      _pcStyleToKeys(f.style).forEach(k => set.add(k));
     }
+    // Freeze each family's set into the canonical dropdown order.
+    for(const [key, set] of _PC_FONT_WEIGHTS) {
+      const list = _ALL_WEIGHT_OPTS.map(o => o.value).filter(v => set.has(v));
+      _PC_FONT_WEIGHTS.set(key, list.length ? list : ['regular']);
+    }
+
     families.sort((a, b) => a.localeCompare(b));
     grp.innerHTML = '';
     for(const fam of families) {
@@ -21342,14 +21317,19 @@ async function loadSystemFonts() {
       try { opt.style.fontFamily = opt.value; } catch(_) {}   // preview each in its own font
       grp.appendChild(opt);
     }
-    grp.label = `── PC Fonts (${families.length}) ──`;
+    grp.label = `\u2500\u2500 PC Fonts (${families.length}) \u2500\u2500`;
     grp.style.display = '';
-    if(btn) { btn.textContent = `✓ ${families.length} PC fonts loaded`; btn.disabled = false; }
-    showToast(`✅ ${families.length} system fonts added to the list`);
+    console.log('[fonts] ' + families.length + ' PC families, weights detected per family');
+
+    // The current font may now have a known weight list — re-derive the dropdown.
+    const ff = document.getElementById('fontFamily');
+    if(ff && typeof updateFontWeights === 'function') updateFontWeights(ff.value);
+    if(!silent) showToast(`\u2705 ${families.length} system fonts added to the list`);
   } catch(err) {
     console.warn('[fonts] queryLocalFonts failed:', err);
-    if(btn) { btn.textContent = orig || '＋ Load all fonts installed on this PC'; btn.disabled = false; }
-    showToast('⚠️ Could not access system fonts: ' + (err && err.message || err));
+    // Always surface a real failure, even on the automatic path — otherwise the
+    // font list silently stays short and looks like the feature is missing.
+    showToast('\u26a0\ufe0f Could not read installed fonts: ' + (err && err.message || err));
   }
 }
 
@@ -21363,7 +21343,7 @@ async function loadSystemFonts() {
     document.removeEventListener('pointerdown', run, true);
     document.removeEventListener('keydown', run, true);
     if(typeof loadSystemFonts === 'function' && typeof window.queryLocalFonts === 'function') {
-      loadSystemFonts();
+      loadSystemFonts({ silent: true });   // no button, no toast — just there
     }
   };
   document.addEventListener('pointerdown', run, true);
@@ -21373,7 +21353,16 @@ async function loadSystemFonts() {
 function updateFontWeights(fontFamily) {
   const sel = document.getElementById('fontStyleSelect');
   if(!sel) return;
-  const allowed = _FONT_WEIGHT_MAP[fontFamily]; // undefined = system font = show all
+  // Which weights to offer, most authoritative first:
+  //   1. the Google <link> subset — only those weights were actually imported
+  //   2. what queryLocalFonts() reported for this installed family
+  //   3. nothing known yet (fonts not enumerated) — show all, as before
+  const _k = _famKey(fontFamily);
+  let allowed = null;
+  for(const css in _FONT_WEIGHT_MAP) {
+    if(_famKey(css) === _k) { allowed = _FONT_WEIGHT_MAP[css]; break; }
+  }
+  if(!allowed && _PC_FONT_WEIGHTS.has(_k)) allowed = _PC_FONT_WEIGHTS.get(_k);
   const curVal  = sel.value;
   sel.innerHTML = '';
   const opts = allowed
