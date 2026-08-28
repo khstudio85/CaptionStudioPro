@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Professional Video Caption Editor",
   "main": "main.js",
-  "author": "Your Name",
+  "author": "Hashim",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
