@@ -20473,8 +20473,10 @@ async function applyProjectData(data) {
   if(data.activeProjectId !== undefined) activeProjectId = data.activeProjectId;
   if(data.projects && data.projects.length > 0) {
     projects = data.projects;
-    // Re-render project/canvas tabs if function exists
-    if(typeof renderProjectTabs === 'function') renderProjectTabs();
+    // Rebuild the canvas list. This used to call renderProjectTabs(), which
+    // does not exist anywhere in the app -- the typeof guard made the mistake
+    // silent, so the list simply never came back.
+    if(typeof renderProjectList === 'function') renderProjectList();
   }
 
   // Restore media/playback bounds BEFORE re-linking footage
@@ -20505,6 +20507,23 @@ async function applyProjectData(data) {
   currentGroup = -2; lastActiveWord = -2;
   stackWords = [];
   updatePreviewControlsVisibility();
+
+  // ── Re-apply the active canvas to the preview ─────────────────────────────
+  // .preview-wrap sets no width/height in CSS ("size is controlled by JS
+  // applyCanvasAspect"), so without that call it collapses to zero and the
+  // preview panel renders as an empty black area with no captions in it.
+  // Creating a canvas runs setActiveProject() + applyCanvasAspect(); restoring
+  // a project ran neither -- which is why a reopened project came back black
+  // with the label still reading "No sequence selected".
+  if(typeof projects !== 'undefined' && projects.length) {
+    const ap = projects.find(p => p.id === activeProjectId) || projects[0];
+    if(ap) {
+      if(typeof setActiveProject  === 'function') setActiveProject(ap.id);
+      if(typeof applyCanvasAspect === 'function') applyCanvasAspect(ap);
+    }
+  } else {
+    console.warn('[Restore] project has no canvas — preview cannot be sized');
+  }
 
   // Re-render
   const disp = document.getElementById('captionDisplay');
