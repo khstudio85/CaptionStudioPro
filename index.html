@@ -51,7 +51,8 @@ body {
 
 /* ─── EXPORT DROPDOWN ─── */
 .export-dropdown { position: relative; display: inline-block; }
-.export-main-btn { background: linear-gradient(135deg,#2d2d3a,#3a3a48) !important; border-color: var(--border2) !important; color: var(--text) !important; font-weight:700 !important; }
+.export-main-btn { background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%) !important; border-color: transparent !important; color: #fff !important; font-weight: 750 !important; box-shadow: 0 3px 12px -4px var(--accent); }
+.export-main-btn:hover { filter: brightness(1.09); }
 .export-main-btn:hover { border-color: var(--accent) !important; color: var(--accent2) !important; }
 .export-menu {
   display: none; position: absolute; top: calc(100% + 6px); right: 0;
@@ -314,50 +315,114 @@ body {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 20px;
-  background: var(--bg2);
+  gap: 10px;
+  padding: 9px 16px;
+  /* Layered surface: a soft top sheen over the panel colour, hairline rule and
+     a low shadow so the bar reads as a raised chrome strip, not a flat div. */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0) 42%),
+    var(--bg2);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 6px 18px -12px rgba(0,0,0,0.9);
   position: sticky;
   top: 0;
   z-index: 100;
   flex-shrink: 0;   /* keep natural height; .main fills the remaining space */
+  /* Never wrap onto a second row: the bar is flex-shrink:0 inside a column, so
+     wrapping would make it taller and steal height from the editor below.
+     On a narrow window the right-hand cluster scrolls instead. */
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
+.topbar::-webkit-scrollbar { height: 0; }
+.topbar > * { flex-shrink: 0; }
+
+/* ── Brand lockup ── */
+.tb-brand { display: flex; align-items: baseline; gap: 7px; padding-right: 4px; }
 .logo {
   font-family: 'Bebas Neue', sans-serif;
-  font-size: 22px;
-  color: var(--accent2);
-  letter-spacing: 2px;
+  font-size: 21px;
+  letter-spacing: 2.4px;
+  line-height: 1;
+  background: linear-gradient(135deg, var(--accent2) 0%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 .badge {
-  font-size: 9px;
-  font-weight: 700;
-  padding: 2px 7px;
+  font-size: 8.5px;
+  font-weight: 800;
+  padding: 2px 6px;
   border-radius: 20px;
-  background: var(--accent);
-  color: white;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+  color: #fff;
   letter-spacing: 1px;
   text-transform: uppercase;
+  box-shadow: 0 2px 8px -2px var(--accent);
+  align-self: center;
 }
-.topbar-right {
-  margin-left: auto;
+.tb-ver { font-size: 10px; color: var(--text3); font-weight: 600; letter-spacing: 0.4px; }
+
+/* ── Segmented button groups ──
+   Related actions sit in one bordered pill instead of floating separately, so
+   the bar reads as a few clusters rather than a row of look-alike buttons. */
+.tb-group {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: rgba(255,255,255,0.028);
+  border: 1px solid var(--border);
 }
+.tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; flex-shrink: 0; }
+
 .tb-btn {
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
   font-family: var(--font);
-  font-weight: 600;
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--border2);
+  font-weight: 650;
+  padding: 6px 11px;
+  border-radius: 8px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text2);
   cursor: pointer;
-  transition: all 0.15s;
+  white-space: nowrap;
+  transition: background 0.14s, color 0.14s, border-color 0.14s, transform 0.1s, box-shadow 0.14s;
 }
-.tb-btn:hover { border-color: var(--accent); color: var(--accent2); }
+.tb-btn:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: var(--border2);
+  color: var(--text);
+}
+.tb-btn:active { transform: translateY(1px); }
+.tb-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.tb-btn:disabled:hover { background: transparent; border-color: transparent; color: var(--text2); transform: none; }
+.tb-btn .tb-ico { font-size: 12.5px; line-height: 1; }
+
+/* Accent variants — one class each, instead of a style="" on every button */
+.tb-btn.tb-green  { color: #00e5a0; }
+.tb-btn.tb-green:hover  { background: rgba(0,229,160,0.12);  border-color: rgba(0,229,160,0.4); color: #00e5a0; }
+.tb-btn.tb-violet { color: var(--accent2); }
+.tb-btn.tb-violet:hover { background: rgba(108,71,255,0.14); border-color: rgba(108,71,255,0.45); color: var(--accent2); }
+.tb-btn.tb-cyan   { color: #00d4ff; }
+.tb-btn.tb-cyan:hover   { background: rgba(0,212,255,0.12);  border-color: rgba(0,212,255,0.4);  color: #00d4ff; }
+
+/* Solid calls to action */
+.tb-btn.primary {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 750;
+  box-shadow: 0 3px 12px -4px var(--accent);
+}
+.tb-btn.primary:hover { filter: brightness(1.09); box-shadow: 0 5px 16px -4px var(--accent); }
 .tb-btn.primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -5567,23 +5632,26 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 
 <!-- TOP BAR -->
 <div class="topbar">
-  <div class="logo">Caption Studio</div>
-  <div class="badge">PRO</div>
-  <div style="font-size:11px;color:var(--text3);margin-left:4px;">v6.0</div>
+  <div class="tb-brand">
+    <div class="logo">Caption Studio</div>
+    <div class="badge">PRO</div>
+    <div class="tb-ver">v6.0</div>
+  </div>
 
-  <!-- Project Save / Load -->
-  <div style="display:flex;gap:5px;margin-left:10px;">
-    <button class="tb-btn" onclick="ProjectManager.saveAs()" title="Save Project — choose a name and folder (Ctrl+S = quick save)" style="background:linear-gradient(135deg,#1a3a2a,#1e4a34);border-color:rgba(0,229,160,0.35);color:#00e5a0;font-weight:700;gap:4px;display:flex;align-items:center;">
-      💾 Save
+  <!-- Project actions — one segmented cluster -->
+  <div class="tb-group" style="margin-left:6px;">
+    <button class="tb-btn tb-green" onclick="ProjectManager.saveAs()" title="Save Project — choose a name and folder (Ctrl+S = quick save)">
+      <span class="tb-ico">💾</span>Save
     </button>
-    <button class="tb-btn" onclick="openProjectsDashboard()" title="My Projects — open, rename, duplicate, delete" style="border-color:rgba(108,71,255,0.35);color:var(--accent2);gap:4px;display:flex;align-items:center;font-weight:700;">
-      📁 Projects
+    <button class="tb-btn tb-violet" onclick="openProjectsDashboard()" title="My Projects — open, rename, duplicate, delete">
+      <span class="tb-ico">📁</span>Projects
     </button>
-    <button class="tb-btn" onclick="document.getElementById('openProjectFile').click()" title="Import a .csp project file" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
-      📂 Import
+    <span class="tb-sep"></span>
+    <button class="tb-btn" onclick="document.getElementById('openProjectFile').click()" title="Import a .csp project file">
+      <span class="tb-ico">📂</span>Import
     </button>
-    <button class="tb-btn" onclick="openLastProject()" title="Resume your last project in one click" style="border-color:rgba(0,229,160,0.2);color:var(--text2);gap:4px;display:flex;align-items:center;">
-      ⏮ Open Last
+    <button class="tb-btn" onclick="openLastProject()" title="Resume your last project in one click">
+      <span class="tb-ico">⏮</span>Open Last
     </button>
     <input type="file" id="openProjectFile" accept=".csp,.json" style="display:none" onchange="loadProject(this)">
   </div>
@@ -5608,10 +5676,9 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
     </div>
 
     <div class="export-dropdown" id="exportDropdown">
-      <button class="tb-btn" id="parityBtn" onclick="toggleExportPreview()"
-        title="Export Preview — show the caption exactly as the EXPORT renderer draws it (same engine, same frame). Click again for the live editor preview."
-        style="border-color:rgba(0,212,255,0.35);color:#00d4ff;font-weight:700;">◎ Export Preview</button>
-      <button class="tb-btn export-main-btn" onclick="toggleExportMenu()">⬇ Export ▾</button>
+      <button class="tb-btn tb-cyan" id="parityBtn" onclick="toggleExportPreview()"
+        title="Export Preview — show the caption exactly as the EXPORT renderer draws it (same engine, same frame). Click again for the live editor preview."><span class="tb-ico">◎</span>Export Preview</button>
+      <button class="tb-btn primary export-main-btn" onclick="toggleExportMenu()"><span class="tb-ico">⬇</span>Export ▾</button>
       <div class="export-menu" id="exportMenu">
         <div class="export-item" onclick="exportSRT()">
           <span class="ei-icon">📄</span>
@@ -5660,9 +5727,9 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
         </div>
       </div>
     </div>
-    <button class="tb-btn import-btn" onclick="openImportModal()" ondblclick="event.stopPropagation()">📥 Import SRT / TXT</button>
-    <button class="tb-btn" onclick="openTranslateModal()" title="Captions ko doosri language mein translate karo" style="background:linear-gradient(135deg,#1a2a3a,#1e3548);border-color:rgba(0,200,255,0.35);color:#00c8ff;font-weight:700;">🌐 Translate</button>
-    <button class="tb-btn auto-cap" id="autoCaptionBtn" onclick="openAutoCaptionModal()" disabled>🤖 Auto Caption</button>
+    <button class="tb-btn import-btn" onclick="openImportModal()" ondblclick="event.stopPropagation()"><span class="tb-ico">📥</span>Import SRT / TXT</button>
+    <button class="tb-btn tb-cyan" onclick="openTranslateModal()" title="Captions ko doosri language mein translate karo"><span class="tb-ico">🌐</span>Translate</button>
+    <button class="tb-btn auto-cap" id="autoCaptionBtn" onclick="openAutoCaptionModal()" disabled><span class="tb-ico">🤖</span>Auto Caption</button>
   </div>
 </div>
 
@@ -8727,39 +8794,19 @@ function onTimeUpdate() {
   lastActiveWord = wi;
 
   if(gi === -1) {
-    // ── No caption at this exact time ──
-    // When PAUSED: show nearest group so preview is never blank
-    // When PLAYING: only clear on long pauses (breath pauses keep showing prev)
-    const prevGi = wordGroups.length > 0
-      ? wordGroups.reduce((best, g, idx) =>
-          g.end <= tDisplay && (best === -1 || g.end > wordGroups[best].end) ? idx : best, -1)
-      : -1;
-
-    const isPaused = !audio || audio.paused;
-
-    if(isPaused) {
-      // Paused — always show nearest group (before or after)
-      const nearestGi = getGroupAtOrNearest(tDisplay);
-      if(nearestGi >= 0) {
-        renderGroup(nearestGi);
-        updateCaptionListHighlight(nearestGi);
-      } else {
-        clearCaptionPreview();
-        updateCaptionListHighlight(-1);
-      }
-    } else if(prevGi >= 0) {
-      const gapSincePrev = tDisplay - wordGroups[prevGi].end;
-      if(gapSincePrev < LONG_PAUSE) {
-        renderGroup(prevGi);
-        updateCaptionListHighlight(prevGi);
-      } else {
-        clearCaptionPreview();
-        updateCaptionListHighlight(-1);
-      }
-    } else {
-      clearCaptionPreview();
-      updateCaptionListHighlight(-1);
-    }
+    // ── Nothing is on screen here ──────────────────────────────────────────
+    // The preview must show exactly what the export will. renderCaptionFrames
+    // draws a caption only while `t >= group.start && t < group.end`, so the
+    // gap between two caption layers is genuinely empty in the output file.
+    //
+    // This used to hold the previous caption on screen for up to LONG_PAUSE
+    // (0.8s) while playing, and show the NEAREST group while paused -- so a
+    // caption stayed visible after its layer ended and reappeared over empty
+    // stretches of timeline, neither of which the exported video ever showed.
+    // Clearing unconditionally is both what the user sees in the export and
+    // what makes every animation style start cleanly on its own group.
+    clearCaptionPreview();
+    updateCaptionListHighlight(-1);
     return;
   }
 
@@ -18743,9 +18790,10 @@ function showExportFormatModal() {
 
 // Resolve ground-truth metadata of the source video currently on the timeline.
 // Prefers ffprobe result (pf.meta); falls back to <video>-element dimensions.
-function _getActiveSourceMeta() {
+function _getActiveSourceMeta(clipArg) {
   try {
-    const clip = (typeof audioClips !== 'undefined' && audioClips.length) ? audioClips[0] : null;
+    const clip = clipArg ||
+      ((typeof audioClips !== 'undefined' && audioClips.length) ? audioClips[0] : null);
     if(!clip) return null;
     const pf = projectFiles.find(f => f.id === clip.fileId);
     if(!pf) return null;
@@ -18755,6 +18803,43 @@ function _getActiveSourceMeta() {
     }
     return null;
   } catch(_) { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// _ensureSourceMeta(clip)
+// Guarantee the source's REAL width/height/fps is known before exporting.
+//
+// The probe on import is fire-and-forget, only runs when the file arrived with
+// a native path, and a project saved before it landed stores meta:null forever.
+// With meta missing the export silently fell back to the CANVAS preset and
+// 30fps -- so "Original" quietly became 1080p30 and a 60fps source came out at
+// half its frame rate. Probe on demand here instead, and cache the result.
+// ═══════════════════════════════════════════════════════════════════════
+async function _ensureSourceMeta(clip) {
+  const existing = _getActiveSourceMeta(clip);
+  if(existing && existing.width && existing.height && existing.fps) return existing;
+  try {
+    const pf = projectFiles.find(f => f.id === (clip && clip.fileId));
+    if(!pf) return existing;
+    let pth = pf.path || (pf.file && pf.file.path) || null;
+    if(!pth && window.electronAPI && window.electronAPI.getFilePath && pf.file) {
+      try { pth = window.electronAPI.getFilePath(pf.file); } catch(_) {}
+    }
+    if(!pth || !window.electronAPI || !window.electronAPI.probeVideo) return existing;
+    const res = await window.electronAPI.probeVideo(pth);
+    if(res && res.success && res.meta) {
+      pf.meta = res.meta;                    // cache -- probing spawns ffprobe
+      if(res.meta.width)  pf.videoWidth  = res.meta.width;
+      if(res.meta.height) pf.videoHeight = res.meta.height;
+      console.log('[Export] probed source:', res.meta.width + 'x' + res.meta.height +
+                  '@' + res.meta.fps + 'fps');
+      return res.meta;
+    }
+    console.warn('[Export] probe failed:', res && res.error);
+  } catch(err) {
+    console.warn('[Export] probe error:', err && err.message);
+  }
+  return existing;
 }
 
 function showProfessionalExportModal() {
@@ -19297,7 +19382,8 @@ async function exportStyledVideo(format) {
   // ═══ Resolve export resolution + fps ═══
   // Priority: explicit user choice → original source metadata → canvas preset → 1080p30.
   const proj = projects.find(p => p.id === activeProjectId);
-  const srcMeta = _getActiveSourceMeta();
+  // Probe on demand -- never let a missing probe silently downgrade the export.
+  const srcMeta = await _ensureSourceMeta(activeClip);
 
   let resolution;
   if(exportOptions.resolution && exportOptions.resolution !== 'original') {
@@ -19329,6 +19415,15 @@ async function exportStyledVideo(format) {
   console.log('[Export] Resolution:', resolution, '@', fps, 'fps',
               '(source:', srcMeta ? (srcMeta.width + 'x' + srcMeta.height + '@' + srcMeta.fps) : 'unknown', ')');
   
+  // Tell the user when the source could not be read and we had to guess, rather
+  // than quietly handing them a downgraded file.
+  if((!exportOptions.resolution || exportOptions.resolution === 'original') &&
+     (!srcMeta || !srcMeta.width || !srcMeta.fps)) {
+    showToast('\u26a0\ufe0f Could not read source resolution/fps \u2014 exporting at ' +
+              resolution + ' @ ' + fps + 'fps');
+    console.warn('[Export] source metadata unavailable; fallback', resolution, fps);
+  }
+
   const trimIn = activeClip.trimIn || 0;
   const trimOut = activeClip.trimOut || (activeClip.timelineEnd - activeClip.timelineStart);
   const duration = trimOut - trimIn;
