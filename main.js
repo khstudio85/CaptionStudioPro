@@ -81,6 +81,7 @@ function createWindow() {
   try { mainWindow.webContents.session.setPermissionCheckHandler(() => true); } catch(_) {}
 
   mainWindow.loadFile('index.html');
+  initAutoUpdater();
   // Dev only — an installed app should not open DevTools on every launch.
   // Still available in a packaged build via `--dev` or Ctrl+Shift+I / F12.
   if(!app.isPackaged || process.argv.includes('--dev')) {
@@ -91,6 +92,96 @@ function createWindow() {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// ═══════════════════════════════════════════
+// AUTO-UPDATE  (electron-updater -> GitHub Releases)
+//
+// Flow: check on launch -> tell the renderer -> the user decides -> download in
+// the background -> install when the app quits. autoDownload stays OFF so a
+// 118MB download never starts behind the user's back, and quitAndInstall is
+// never called mid-session, so an in-progress export cannot be killed by it.
+//
+// Only runs in a packaged build: unpackaged there is no app-update.yml and
+// every call throws.
+// ═══════════════════════════════════════════
+let autoUpdater = null;
+let _updateDownloaded = false;
+
+function _sendToWindow(channel, payload) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+  } catch (_) {}
+}
+
+function initAutoUpdater() {
+  if (!app.isPackaged) {
+    console.log('[update] skipped — not a packaged build');
+    return;
+  }
+  try {
+    autoUpdater = require('electron-updater').autoUpdater;
+  } catch (err) {
+    console.warn('[update] electron-updater unavailable:', err.message);
+    return;
+  }
+
+  autoUpdater.autoDownload = false;           // ask first — never surprise-download
+  autoUpdater.autoInstallOnAppQuit = true;    // apply it on the next quit
+
+  autoUpdater.on('update-available', info => {
+    console.log('[update] available:', info.version);
+    _sendToWindow('update-available', { version: info.version, releaseDate: info.releaseDate });
+  });
+  autoUpdater.on('update-not-available', () => {
+    console.log('[update] already up to date');
+    _sendToWindow('update-none', {});
+  });
+  autoUpdater.on('download-progress', p => {
+    _sendToWindow('update-progress', {
+      percent: Math.round(p.percent || 0),
+      transferred: p.transferred,
+      total: p.total,
+      bytesPerSecond: p.bytesPerSecond,
+    });
+  });
+  autoUpdater.on('update-downloaded', info => {
+    console.log('[update] downloaded:', info.version);
+    _updateDownloaded = true;
+    _sendToWindow('update-ready', { version: info.version });
+  });
+  autoUpdater.on('error', err => {
+    console.warn('[update] error:', err && err.message);
+    _sendToWindow('update-error', { message: (err && err.message) || String(err) });
+  });
+
+  // Give the window a moment to finish loading so the first event isn't lost.
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch(err =>
+      console.warn('[update] check failed:', err && err.message));
+  }, 4000);
+}
+
+ipcMain.handle('update-check', async () => {
+  if (!autoUpdater) return { ok: false, reason: 'unavailable' };
+  try { await autoUpdater.checkForUpdates(); return { ok: true }; }
+  catch (err) { return { ok: false, reason: (err && err.message) || String(err) }; }
+});
+
+ipcMain.handle('update-download', async () => {
+  if (!autoUpdater) return { ok: false, reason: 'unavailable' };
+  try { await autoUpdater.downloadUpdate(); return { ok: true }; }
+  catch (err) { return { ok: false, reason: (err && err.message) || String(err) }; }
+});
+
+// Restart into the new version right now. Only offered once the download has
+// finished; otherwise it does nothing rather than killing the app mid-download.
+ipcMain.handle('update-install-now', async () => {
+  if (!autoUpdater || !_updateDownloaded) return { ok: false, reason: 'not-ready' };
+  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  return { ok: true };
+});
+
+ipcMain.handle('update-app-version', async () => app.getVersion());
 
 // ═══════════════════════════════════════════
 // IPC HANDLERS

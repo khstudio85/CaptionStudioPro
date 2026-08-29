@@ -4150,6 +4150,42 @@ input[type=text]:focus { outline: none; border-color: var(--accent); }
 .ffc-opt:hover{ background: rgba(108,71,255,0.14); }
 .ffc-empty { padding: 10px 8px; font-size: 11px; color: var(--text3); }
 
+/* ── Update notice ── */
+#updBar {
+  display: none;
+  position: fixed; right: 16px; bottom: 16px;
+  width: 340px; max-width: calc(100vw - 32px);
+  align-items: center; gap: 10px;
+  padding: 11px 13px;
+  background: var(--bg2); border: 1px solid var(--border2, var(--border));
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(0,0,0,0.55);
+  z-index: 9000;
+  font-family: var(--font);
+  overflow: hidden;
+}
+#updBar.show { display: flex; }
+#updIcon { font-size: 16px; flex-shrink: 0; }
+#updTitle { font-size: 12px; font-weight: 800; color: var(--text); }
+#updSub   { font-size: 10.5px; color: var(--text3); margin-top: 1px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* download progress paints along the bottom edge */
+#updBarFill {
+  position: absolute; left: 0; bottom: 0; height: 2px; width: 0%;
+  background: var(--accent); transition: width 0.2s; pointer-events: none;
+}
+.upd-btn {
+  flex-shrink: 0; cursor: pointer; font-family: var(--font);
+  font-size: 11px; font-weight: 700; padding: 6px 10px;
+  border-radius: 7px; border: 1px solid var(--border2, var(--border));
+  background: transparent; color: var(--text2);
+  transition: all 0.15s;
+}
+.upd-btn:hover { color: var(--text); border-color: var(--accent2, var(--accent)); }
+.upd-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.upd-btn.primary:hover { filter: brightness(1.1); }
+.upd-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Premium select ── */
 .tp-select {
   width: 100%;
@@ -19900,6 +19936,84 @@ function applyFontStyle() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
+// AUTO-UPDATE NOTICE
+// The main process checks GitHub Releases on launch and pushes events here.
+// Nothing downloads until the user says so, and the new version is applied on
+// quit — so an export in progress is never interrupted.
+// ══════════════════════════════════════════════════════════════════════════
+let _updState = 'idle';        // idle | available | downloading | ready
+let _updVersion = '';
+
+function _updEl(id) { return document.getElementById(id); }
+
+function updShow(state, title, sub, actionLabel, showDismiss) {
+  const bar = _updEl('updBar');
+  if(!bar) return;
+  _updState = state;
+  _updEl('updTitle').textContent = title;
+  _updEl('updSub').textContent   = sub || '';
+  const act = _updEl('updAction');
+  if(actionLabel) { act.style.display = ''; act.textContent = actionLabel; act.disabled = false; }
+  else            { act.style.display = 'none'; }
+  _updEl('updDismiss').style.display = showDismiss === false ? 'none' : '';
+  bar.classList.add('show');
+}
+
+function updHide() {
+  const bar = _updEl('updBar');
+  if(bar) bar.classList.remove('show');
+  // A finished download still installs on quit — hiding the notice only
+  // dismisses it, it does not cancel the update.
+}
+
+function updPrimary() {
+  if(!window.electronAPI) return;
+  if(_updState === 'available') {
+    _updEl('updAction').disabled = true;
+    updShow('downloading', 'Downloading ' + _updVersion + '…', 'Starting…', null, true);
+    electronAPI.updateDownload().then(r => {
+      if(r && !r.ok) updShow('idle', 'Update failed', r.reason || 'Could not download', 'Retry', true);
+    });
+  } else if(_updState === 'ready') {
+    electronAPI.updateInstallNow();
+  }
+}
+
+function _updFmtMB(b) { return (b / 1048576).toFixed(1) + ' MB'; }
+
+(function _updInit() {
+  if(!window.electronAPI || !electronAPI.onUpdateEvent) return;
+  electronAPI.onUpdateEvent((chan, data) => {
+    if(chan === 'update-available') {
+      _updVersion = 'v' + data.version;
+      updShow('available', 'Update available — ' + _updVersion,
+              'Installs when you close the app', 'Download', true);
+    } else if(chan === 'update-progress') {
+      const fill = _updEl('updBarFill');
+      if(fill) fill.style.width = (data.percent || 0) + '%';
+      _updEl('updSub').textContent =
+        _updFmtMB(data.transferred || 0) + ' of ' + _updFmtMB(data.total || 0) +
+        '  ·  ' + (data.percent || 0) + '%';
+    } else if(chan === 'update-ready') {
+      const fill = _updEl('updBarFill');
+      if(fill) fill.style.width = '100%';
+      updShow('ready', 'Update ready — v' + data.version,
+              'Applied when you close the app', 'Restart now', true);
+    } else if(chan === 'update-error') {
+      // Only surface an error the user actually triggered — a failed silent
+      // launch check should not nag someone who is just editing.
+      if(_updState === 'downloading') {
+        updShow('idle', 'Update failed', data.message || 'Unknown error', 'Retry', true);
+      } else {
+        console.warn('[update]', data.message);
+      }
+    } else if(chan === 'update-none') {
+      console.log('[update] already on the latest version');
+    }
+  });
+})();
+
+// ══════════════════════════════════════════════════════════════════════════
 // SEARCHABLE FONT PICKER  (#ffcInput / #ffcList)
 // The native <select id="fontFamily"> remains the source of truth — the rest
 // of the app reads and writes its .value, and project save/restore goes
@@ -26125,6 +26239,18 @@ function exportEDL() {
 
 <!-- ── DRAG TIME TOOLTIP ── -->
 <div id="tlDragTooltip"></div>
+
+<!-- ══ UPDATE NOTICE ══ -->
+<div id="updBar">
+  <span id="updIcon">⬆</span>
+  <div style="flex:1;min-width:0;">
+    <div id="updTitle">Update available</div>
+    <div id="updSub"></div>
+  </div>
+  <div id="updBarFill"></div>
+  <button class="upd-btn primary" id="updAction" onclick="updPrimary()">Download</button>
+  <button class="upd-btn"         id="updDismiss" onclick="updHide()">Later</button>
+</div>
 
 <!-- ══ RIGHT-CLICK CONTEXT MENU ══ -->
 <div id="tlContextMenu">

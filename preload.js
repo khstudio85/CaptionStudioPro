@@ -54,6 +54,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveFileDialog: (options) => ipcRenderer.invoke('save-file-dialog', options),
   showInFolder: (path) => ipcRenderer.invoke('show-in-folder', path),
   
+  // ── Auto-update ──
+  updateCheck:      () => ipcRenderer.invoke('update-check'),
+  updateDownload:   () => ipcRenderer.invoke('update-download'),
+  updateInstallNow: () => ipcRenderer.invoke('update-install-now'),
+  getAppVersion:    () => ipcRenderer.invoke('update-app-version'),
+  onUpdateEvent: (callback) => {
+    const chans = ['update-available','update-none','update-progress','update-ready','update-error'];
+    chans.forEach(c => {
+      ipcRenderer.removeAllListeners(c);
+      ipcRenderer.on(c, (event, data) => callback(c, data));
+    });
+  },
+
   onExportProgress: (callback) => {
     ipcRenderer.removeAllListeners('export-progress');
     ipcRenderer.on('export-progress', (event, data) => callback(data));
