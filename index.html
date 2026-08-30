@@ -53,7 +53,6 @@ body {
 .export-dropdown { position: relative; display: inline-block; }
 .export-main-btn { background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%) !important; border-color: transparent !important; color: #fff !important; font-weight: 750 !important; box-shadow: 0 3px 12px -4px var(--accent); }
 .export-main-btn:hover { filter: brightness(1.09); }
-.export-main-btn:hover { border-color: var(--accent) !important; color: var(--accent2) !important; }
 .export-menu {
   display: none; position: absolute; top: calc(100% + 6px); right: 0;
   background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px;
@@ -379,6 +378,20 @@ body {
   border: 1px solid var(--border);
 }
 .tb-sep { width: 1px; height: 20px; background: var(--border); margin: 0 3px; flex-shrink: 0; }
+
+/* Right-hand action cluster.
+   REGRESSION NOTE: this rule was lost when the topbar CSS was rewritten. With
+   no display:flex the div became a full-width block, so the speed select and
+   undo/redo stacked above the buttons, the bar grew to two rows and overlapped
+   the Project Panel. Keep the flex + nowrap. */
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.topbar-right > * { flex-shrink: 0; }
 
 .tb-btn {
   display: inline-flex;
@@ -756,10 +769,10 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: var(--bg3);
+  background: rgba(255,255,255,0.028);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px;
+  border-radius: 11px;
+  padding: 3px;
 }
 .ur-btn {
   display: flex;
@@ -767,7 +780,7 @@ body {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border-radius: 6px;
+  border-radius: 8px;
   border: none;
   background: transparent;
   color: var(--text3);
@@ -1172,14 +1185,21 @@ body {
 .speed-select {
   font-size: 11px;
   font-family: var(--font);
-  font-weight: 600;
-  padding: 4px 8px;
-  border-radius: 5px;
+  font-weight: 650;
+  padding: 6px 26px 6px 10px;
+  border-radius: 9px;
   border: 1px solid var(--border);
-  background: var(--bg3);
+  background:
+    url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'%3E%3Cpath fill='%23888' d='M0 0h8L4 5z'/%3E%3C/svg%3E") no-repeat right 9px center,
+    rgba(255,255,255,0.028);
   color: var(--text2);
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: border-color 0.14s, background-color 0.14s, color 0.14s;
 }
+.speed-select:hover { border-color: var(--border2); color: var(--text); }
+.speed-select:focus { outline: none; border-color: var(--accent); }
 
 /* ─── TIMELINE — CapCut Style 3-Track ─── */
 .timeline-section {
