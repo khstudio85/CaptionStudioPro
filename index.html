@@ -329,13 +329,12 @@ body {
   flex-shrink: 0;   /* keep natural height; .main fills the remaining space */
   /* Never wrap onto a second row: the bar is flex-shrink:0 inside a column, so
      wrapping would make it taller and steal height from the editor below.
-     On a narrow window the right-hand cluster scrolls instead. */
+     flex-wrap alone is enough -- do NOT add overflow here. Any overflow value
+     other than visible makes .topbar a clipping container, which cut off the
+     Export dropdown (position:absolute, hanging below the bar) at the bar's
+     own bottom edge, so the menu opened invisibly. */
   flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
 }
-.topbar::-webkit-scrollbar { height: 0; }
 .topbar > * { flex-shrink: 0; }
 
 /* ── Brand lockup ── */
