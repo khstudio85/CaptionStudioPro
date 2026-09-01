@@ -201,22 +201,33 @@
       return new CaptionStyleSpec({ ...this.toJSON(), ...overrides });
     }
     
+    // THE typography scale — authored reference-space px → target-canvas px.
+    // Every getScaled* below and every effect scale in CaptionRenderer goes
+    // through here, so a caption cannot be responsive in one metric and fixed in
+    // another. `targetWidth` is optional only for older 1-arg call sites; when
+    // omitted it is derived from this spec's own canvas aspect so min() still
+    // means the same thing.
+    typeScale(targetWidth, targetHeight) {
+      const h = +targetHeight > 0 ? +targetHeight : this.canvasHeight;
+      const w = +targetWidth > 0
+        ? +targetWidth
+        : h * ((this.canvasWidth || CANVAS_REF_W) / (this.canvasHeight || CANVAS_REF_H));
+      return canvasTypeScale(w, h);
+    }
+
     // Get scaled font size for a target canvas
-    getScaledFontSize(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return Math.max(4, Math.round(this.fontSize * scale));
+    getScaledFontSize(targetHeight, targetWidth) {
+      return Math.max(4, Math.round(this.fontSize * this.typeScale(targetWidth, targetHeight)));
     }
-    
+
     // Get scaled stroke width for a target canvas
-    getScaledStrokeWidth(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return this.strokeWidth * scale;
+    getScaledStrokeWidth(targetHeight, targetWidth) {
+      return this.strokeWidth * this.typeScale(targetWidth, targetHeight);
     }
-    
+
     // Get scaled letter spacing
-    getScaledLetterSpacing(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return this.letterSpacing * scale;
+    getScaledLetterSpacing(targetHeight, targetWidth) {
+      return this.letterSpacing * this.typeScale(targetWidth, targetHeight);
     }
     
     // Get position in pixels for target canvas
