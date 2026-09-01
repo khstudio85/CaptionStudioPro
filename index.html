@@ -10537,7 +10537,9 @@ function renderGroup(idx) {
   // Clamp maxWidth so text never overflows canvas edges:
   // text spans from (posX - maxWidth/2) to (posX + maxWidth/2)
   // so effectiveMaxWidth <= min(posX*2, (100-posX)*2)
-  const _safeMaxW = Math.min(s.maxWidth, _posX * 2, (100 - _posX) * 2);
+  // Same safe box as the exporter, EDGE_INSET_PCT included — see
+  // caption-engine.js renderFrame(). Preview and export must clamp identically.
+  const _safeMaxW = Math.min(s.maxWidth, _posX * 2 - _edgeInset(), (100 - _posX) * 2 - _edgeInset());
   disp.style.maxWidth = Math.max(20, _safeMaxW) + '%';
   disp.style.rowGap   = Math.round(s.lineSpacing * _fontScale) + 'px';
   disp.style.wordSpacing = '0';
@@ -10571,7 +10573,12 @@ function renderGroup(idx) {
   // Scale the drop shadow with the caption so it stays proportional in the
   // preview AND when enlarged in fullscreen (was fixed px → vanished when big).
   const _scaledShadowCSS = buildShadowCSS(_fontScale);
-  const _shadowLayers = [_scaledShadowCSS, glowCSS].filter(Boolean).join(', ');
+  // ORDER MATTERS: in a CSS text-shadow list the EARLIER layer paints ON TOP of
+  // later ones (all behind the glyph). Glow first therefore puts glow between the
+  // drop shadow and the sharp text — the same back→front order the export bakes
+  // into its word layer (DROP SHADOW → GLOW → SHARP TEXT). Listing the shadow
+  // first, as this used to, painted the drop shadow over the glow instead.
+  const _shadowLayers = [glowCSS, _scaledShadowCSS].filter(Boolean).join(', ');
   // ✅ FIX: When gradient text fill is on, the visible color comes from
   // background-clip:text (the glyph's own fill is transparent). text-shadow
   // paints in that same transparent-fill layer, so it ends up rendering ON TOP
@@ -10630,7 +10637,7 @@ function renderGroup(idx) {
     disp.style.display   = 'flex';
     disp.style.width     = '';
     disp.style.height    = '';
-    disp.style.maxWidth  = Math.max(20, Math.min(s.maxWidth, (_posX||50)*2, (100-(_posX||50))*2)) + '%';
+    disp.style.maxWidth  = Math.max(20, Math.min(s.maxWidth, (_posX||50)*2 - _edgeInset(), (100-(_posX||50))*2 - _edgeInset())) + '%';
     disp._ss4            = null;
     disp.dataset.ss4GroupKey = '';
     disp.dataset.ss4LastFi   = '';
@@ -10672,7 +10679,7 @@ function renderGroup(idx) {
     if(needRebuild) {
       disp.dataset.groupIdx = idx; disp.dataset.animStyle = '1'; disp.dataset.lb1 = lbKey;
       disp.style.flexDirection = lineBreakEnabled ? 'column' : '';
-      const gapCss = s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px');
+      const gapCss = _previewWordGapCss(s);
       // ✅ FIX: NO padding on chip — padding caused word spacing to increase when style was applied.
       // Highlight visual is achieved via box-shadow (spread) which does NOT affect layout.
       disp.innerHTML = _buildChipsHTML(group.words, (w, i) =>
@@ -10785,7 +10792,7 @@ function renderGroup(idx) {
     if(needRebuild) {
       disp.dataset.groupIdx = idx; disp.dataset.animStyle = '3'; disp.dataset.lb3 = lbKey;
       disp.style.flexDirection = lineBreakEnabled ? 'column' : '';
-      const gapCss = s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px');
+      const gapCss = _previewWordGapCss(s);
       // All words start with textColor — active word color is applied in the loop below
       disp.innerHTML = _buildChipsHTML(group.words, (w, i) =>
         `<span class="word-chip" data-i="${i}" data-gi="${idx}"
@@ -10896,9 +10903,14 @@ function renderGroup(idx) {
       disp.dataset.groupIdx    = groupKey;  // compatibility with other code
 
       // ── PRE-MEASURE every word in the group ──
-      // Gap: same formula as the shared renderGroup code (line ~5772)
-      const baseGapEm = s.fontSize * 0.27  /* canvas-space px — CSS transform handles display scaling */;
-      const gapPx     = s.wordGap === 0 ? baseGapEm : (baseGapEm + s.wordGap);
+      // Gap: same formula as the shared renderGroup code above.
+      // MUST be in PREVIEW space: the `ruler` below measures with baseStyle,
+      // whose font-size is already _scaledFontSize. Deriving the gap from the raw
+      // canvas-space s.fontSize mixed the two spaces, inflating every gap by
+      // 1/_fontScale — that (plus maxWidth:none) is what pushed SlideStack off
+      // the left/right edges when the canvas got narrower.
+      const baseGapEm = _scaledFontSize * 0.27;
+      const gapPx     = s.wordGap === 0 ? baseGapEm : (baseGapEm + s.wordGap * _fontScale);
 
       // Off-screen measurement span — identical font/size/weight as real chips
       const ruler = document.createElement('span');
@@ -10921,7 +10933,7 @@ function renderGroup(idx) {
       document.body.removeChild(ruler);
 
       const totalW = Math.max(1, curX - gapPx);
-      const lineH  = Math.round(s.fontSize * 1.5);   // container height (stable)
+      const lineH  = Math.round(_scaledFontSize * 1.5);   // container height (stable), preview space
 
       // Lock container geometry — these values NEVER change during playback
       disp.style.width     = totalW + 'px';
@@ -11055,7 +11067,7 @@ function renderGroup(idx) {
     if(needRebuild) {
       disp.dataset.groupIdx = idx; disp.dataset.animStyle = '5'; disp.dataset.lb5 = lbKey;
       disp.style.flexDirection = lineBreakEnabled ? 'column' : '';
-      const gapCss = s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px');
+      const gapCss = _previewWordGapCss(s);
       disp.innerHTML = _buildChipsHTML(group.words, (w, i) =>
         `<span class="word-chip" data-i="${i}" data-gi="${idx}"
           onclick="selectWordForEdit(${idx},${i},this)"
@@ -11133,7 +11145,14 @@ function renderGroup(idx) {
       const line2txt = words.slice(split).map(w => applyCase(w)).join(' ');
 
       // ── Values with safe defaults ──
-      const basePx  = Math.round(s.fontSize || 32)  /* canvas-space px — CSS transform handles display scaling */;
+      // PREVIEW space. This used to be the raw canvas-space s.fontSize on the
+      // assumption that "CSS transform handles display scaling" — but
+      // applyPreviewTransform() only ever applies the auto-fit, never a
+      // canvas→preview scale. So Apple Reveal rendered its text at full
+      // canvas px (several times larger than every other style) and relied on
+      // auto-fit to claw it back, which is exactly the "some styles keep their
+      // original sizing and get cut off" symptom.
+      const basePx  = Math.max(2, (s.fontSize || 32) * _fontScale);
       const sz1     = Math.round(basePx * (+p.line1SizeMul || 0.72));
       const sz2     = Math.round(basePx * (+p.line2SizeMul || 1.18));
       const fw1     = +p.line1Weight  || 300;
@@ -11145,8 +11164,10 @@ function renderGroup(idx) {
       const delay2  = +p.line2Delay   || 160;
       const ls1     = +p.trackingLine1 >= 0 ? +p.trackingLine1 : 0.08;
       const ls2     = p.trackingLine2  !== undefined ? +p.trackingLine2 : 0.01;
-      const gap     = +p.lineGap !== undefined ? +p.lineGap : 8;  // can be negative
-      const glow    = +p.glowAmt      || 18;
+      // lineGap / glowAmt are authored in canvas-space px, like every other
+      // px-valued style property, so they scale with the caption too.
+      const gap     = (+p.lineGap !== undefined ? +p.lineGap : 8) * _fontScale;  // can be negative
+      const glow    = (+p.glowAmt      || 18) * _fontScale;
       const dir     = p.direction     || 'up';
       const ffam    = s.fontFamily    || 'sans-serif';
       const ff1     = p.line1Font     || ffam;
@@ -11160,11 +11181,14 @@ function renderGroup(idx) {
 
       // ── Direction → translate start values ──
       // Line1 uses translate only; Line2 uses scale + translate
+      // Travel distances are canvas-space px — scale them so the reveal moves
+      // the same visual distance at every canvas size.
+      const _d = _fontScale;
       const dirMap = {
-        up:    { tx: 0,   ty:  12, tx2: 0,   ty2:  8 },
-        down:  { tx: 0,   ty: -12, tx2: 0,   ty2: -8 },
-        left:  { tx: -24, ty:   0, tx2: -24, ty2:  0 },
-        right: { tx:  24, ty:   0, tx2:  24, ty2:  0 },
+        up:    { tx: 0,       ty:  12*_d, tx2: 0,       ty2:  8*_d },
+        down:  { tx: 0,       ty: -12*_d, tx2: 0,       ty2: -8*_d },
+        left:  { tx: -24*_d,  ty:   0,    tx2: -24*_d,  ty2:  0 },
+        right: { tx:  24*_d,  ty:   0,    tx2:  24*_d,  ty2:  0 },
       };
       const dm = dirMap[dir] || dirMap.up;
       const t1from = `translate(${dm.tx}px,${dm.ty}px)`;
@@ -11579,7 +11603,7 @@ function renderStyle7(disp, group, idx, activeWordIdx, s, baseStyle) {
     disp.style.alignItems     = lineBreakEnabled ? 'center'  : '';
     disp.style.justifyContent = '';
 
-    const gapCss = s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px');
+    const gapCss = _previewWordGapCss(s);
     disp.innerHTML = _buildChipsHTML(group.words, (w, i) =>
       `<span class="word-chip s7-chip" data-i="${i}" data-gi="${idx}"
           onclick="selectWordForEdit(${idx},${i},this)"
@@ -13154,7 +13178,8 @@ function _tryInPlaceStyleUpdate() {
     }
 
     // Shadow / Glow — scale shadow with the caption (proportional at any size)
-    const shadowLayers = [buildShadowCSS(_fontScale), s.textGlowCSS].filter(Boolean).join(', ');
+    // Glow first — see the ORDER MATTERS note in renderGroup().
+    const shadowLayers = [s.textGlowCSS, buildShadowCSS(_fontScale)].filter(Boolean).join(', ');
     if(shadowLayers) {
       if(s.textGradientOn) {
         chip.style.filter = _textShadowToDropShadowFilter(shadowLayers);
@@ -15874,6 +15899,12 @@ function getS3LayerColor(idx) {
 
 // Apply line break in caption display
 function renderWithLineBreak(disp, group, idx, activeWordIdx, s, baseStyle) {
+  // Hoisted: one measurement for the whole render instead of one per chip.
+  const _lbGap    = _previewWordGapCss(s);
+  const _lbScale  = getPreviewFontScale();
+  // hlRadius is authored in canvas-space px like every other px style value, so it
+  // has to be scaled into preview space too — it was emitted raw.
+  const _lbRadius = Math.max(0, (s.hlRadius || 0) * _lbScale);
   const lines = getDisplayLines(group.words);
   const allChips = [];
   let wordOffset = 0;
@@ -15885,13 +15916,13 @@ function renderWithLineBreak(disp, group, idx, activeWordIdx, s, baseStyle) {
         onclick="selectWordForEdit(${idx},${globalI},this)"
         style="${baseStyle}color:${isActive ? s.hlTextColor : s.textColor};
           background:${isActive ? s.hlBgColor : 'transparent'};
-          border-radius:${isActive ? s.hlRadius+'px' : '4px'};
+          border-radius:${isActive ? _lbRadius.toFixed(1)+'px' : '4px'};
           transform:${isActive ? `scale(${s.hlScale/100})` : 'scale(1)'};"
         >${applyCase(w)}</span>`;
       return chip;
     }).join('');
     wordOffset += lineWords.length;
-    return `<div style="display:flex;justify-content:center;flex-wrap:wrap;column-gap:${s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px')};width:100%;">${chips}</div>`;
+    return `<div style="display:flex;justify-content:center;flex-wrap:wrap;column-gap:${_lbGap};width:100%;">${chips}</div>`;
   }).join('');
 }
 
@@ -19420,18 +19451,26 @@ async function exportStyledVideo(format) {
   expHeight -= (expHeight % 2);
   resolution = expWidth + 'x' + expHeight;
 
-  let fps;
+  let fps, fpsExact = null;
   if(exportOptions.fps && exportOptions.fps !== 'original') {
     fps = parseFloat(exportOptions.fps);
+    fpsExact = String(fps);
   } else if(srcMeta && srcMeta.fps) {
     fps = srcMeta.fps;                                     // preserve original fps by default
+    // r_frame_rate is the EXACT rational ("30000/1001"). Encoding at the rounded
+    // decimal 29.97 accumulates drift against the source and desyncs the audio on
+    // anything longer than a few minutes, so hand FFmpeg the fraction when we have it.
+    fpsExact = (srcMeta.fpsExact && /^\d+\/\d+$/.test(srcMeta.fpsExact))
+      ? srcMeta.fpsExact : String(fps);
   } else if(proj && proj.fps) {
     fps = proj.fps;
+    fpsExact = String(fps);
   } else {
     fps = 30;
+    fpsExact = '30';
   }
 
-  console.log('[Export] Resolution:', resolution, '@', fps, 'fps',
+  console.log('[Export] Resolution:', resolution, '@', fps, 'fps', '(exact:', fpsExact + ')',
               '(source:', srcMeta ? (srcMeta.width + 'x' + srcMeta.height + '@' + srcMeta.fps) : 'unknown', ')');
   
   // Tell the user when the source could not be read and we had to guess, rather
@@ -19495,6 +19534,7 @@ async function exportStyledVideo(format) {
       fps: fps,
       trimIn: trimIn,
       trimOut: trimOut,
+      fpsExact: fpsExact,
       quality: exportOptions.quality,
       useGPU: exportOptions.useGPU,
       // Used only when the source has NO video stream (audio-only project):
@@ -19839,36 +19879,85 @@ function getPreviewTransformScale() {
 // Export = pure canvas-space, no scale applied = exactly 50px
 // ══════════════════════════════════════════════════════════════════
 
+// Canvas-relative typography scale, delegated to caption-engine.js so the
+// preview and the export literally share one formula. See the RESPONSIVE CANVAS
+// TYPOGRAPHY SCALE banner there for why it is min(W/1080, H/1920).
+// Safety margin held back from the position-derived half of the max-width box.
+// Read from the engine so preview and export can never disagree on it.
+function _edgeInset() {
+  return (typeof CaptionEngine !== 'undefined' && CaptionEngine.EDGE_INSET_PCT != null)
+    ? CaptionEngine.EDGE_INSET_PCT : 1;
+}
+
+// The ONE word-gap rule for the DOM preview. Mirrors the engine's
+//   wordGap = fontSize*0.27 + wordSpacing*typeScale
+// so preview and export space words identically.
+//
+// Five copies of this lived inline, and all five read
+//   s.wordGap === 0 ? '0.27em' : (s.wordGap + 'px')
+// which (a) DROPPED the 0.27em base gap as soon as Word Spacing was non-zero and
+// (b) fed a raw canvas-space px value straight into CSS with no preview scaling.
+// So any non-zero Word Spacing spaced the preview differently from the export.
+function _previewWordGapCss(s) {
+  const fs = getPreviewFontScale();
+  const px = Math.max(2, ((s && s.fontSize) || 32) * fs);
+  const wg = (s && s.wordGap) || 0;
+  return wg === 0 ? '0.27em' : Math.max(0, px * 0.27 + wg * fs) + 'px';
+}
+
+function getCanvasTypeScale() {
+  const cw = getCanvasWidth(), ch = getCanvasHeight();
+  return (typeof CaptionEngine !== 'undefined' && CaptionEngine.canvasTypeScale)
+    ? CaptionEngine.canvasTypeScale(cw, ch)
+    : 1;
+}
+
+// Multiplier applied to EVERY canvas-space typography value before it reaches
+// the DOM. Two independent factors:
+//
+//   1. getCanvasTypeScale() — how big the caption should be for THIS canvas's
+//      dimensions. Identical to what the exporter applies, so switching a 9:16
+//      canvas for a 16:9 one changes preview and exported video by the same
+//      amount. This is the half that used to be missing: fontSize was a literal
+//      canvas-space px value, so a narrower frame made the caption relatively
+//      1.78x wider and it ran off the edges.
+//
+//   2. the preview letterbox fit — pure on-screen display scaling so the canvas
+//      fits the panel. Has no bearing on the exported file.
+//
+// Every style block multiplies its canvas-space values by this, which is why
+// fixing it here fixes all nine styles at once.
 function getPreviewFontScale() {
+  const canvasH = getCanvasHeight();
+  const canvasW = getCanvasWidth();
+  const typeScale = getCanvasTypeScale();
+
   const pw = document.getElementById('previewWrap');
-  if (!pw) return 1;
+  if (!pw) return typeScale;
 
   const rect = pw.getBoundingClientRect();
   const wrapH = rect.height;
   const wrapW = rect.width;
-  if (!wrapH || !wrapW) return 1;
+  if (!wrapH || !wrapW) return typeScale;
+  if (!canvasH || !canvasW) return typeScale;
 
-  const canvasH = getCanvasHeight();
-  const canvasW = getCanvasWidth();
-  if (!canvasH || !canvasW) return 1;
-
-  // ── Canvas aspect ratio determines which dimension drives the scale ──
-  // previewWrap uses aspect-ratio CSS to match canvas, so we scale by
+  // ── Canvas aspect ratio determines which dimension drives the display fit ──
+  // previewWrap uses aspect-ratio CSS to match canvas, so we fit by
   // whichever dimension is the "constraint" (typically height for vertical)
   const canvasAspect  = canvasW / canvasH;
   const previewAspect = wrapW / wrapH;
 
-  let scale;
+  let fit;
   if (previewAspect > canvasAspect) {
     // Preview is wider than canvas aspect → HEIGHT is the constraint
-    scale = wrapH / canvasH;
+    fit = wrapH / canvasH;
   } else {
     // Preview is taller than canvas aspect → WIDTH is the constraint
-    scale = wrapW / canvasW;
+    fit = wrapW / canvasW;
   }
 
-  // Never let scale be 0 or absurd — safety only
-  return Math.max(0.01, Math.min(scale, 10.0));
+  // Never let the display fit be 0 or absurd — safety only
+  return typeScale * Math.max(0.01, Math.min(fit, 10.0));
 }
 
 // LEGACY constant kept for backward compat — not used in new scale logic
@@ -19901,9 +19990,33 @@ function applyPreviewTransform() {
   // ── AUTO-FIT: never let the caption overflow its max-width box / the canvas ──
   // Measure natural content width, and if it exceeds the box, scale the whole
   // caption down (around its center) so long words / huge fonts stay on-screen.
+  //
+  // The available width is computed from the SAME safe box the shared style code
+  // uses — min(maxWidth, posX*2, (100-posX)*2) — rather than from
+  // disp.clientWidth. clientWidth silently agreed with that box only while the
+  // element was in flex mode with a % max-width; styles that switch to
+  // display:block + max-width:none for absolutely-positioned children (style 4)
+  // reported their own overflowing width as "available" and never got fitted.
+  // Deriving the box explicitly makes containment layout-mode independent, so
+  // every style is clamped by the same rule.
   disp.style.transform = 'translate(-50%, -50%)';           // reset before measuring
-  const avail   = disp.clientWidth;
-  const natural = disp.scrollWidth;
+  const _parent  = disp.offsetParent || disp.parentElement;
+  const _parentW = _parent ? _parent.clientWidth : 0;
+  const _pxEl    = document.getElementById('posX');
+  const _mwEl    = document.getElementById('maxWidth');
+  const _pX      = _pxEl ? (parseFloat(_pxEl.value) || 50) : 50;
+  const _mW      = _mwEl ? (parseFloat(_mwEl.value) || 85) : 85;
+  const _safePct = Math.max(20, Math.min(_mW, _pX * 2 - _edgeInset(), (100 - _pX) * 2 - _edgeInset()));
+
+  // scrollWidth misses overflow when children are absolutely positioned;
+  // the element's own box width misses it when that box is capped by max-width.
+  // The larger of the two is the real footprint in both layout modes.
+  // offsetWidth (not getBoundingClientRect) so every term here is in the same
+  // layout-px space as scrollWidth/clientWidth — a scale transform on any
+  // ancestor would silently skew a getBoundingClientRect() comparison.
+  const natural = Math.max(disp.scrollWidth, disp.offsetWidth);
+  const avail   = _parentW > 0 ? _parentW * (_safePct / 100) : disp.clientWidth;
+
   let fit = 1;
   if(avail > 0 && natural > avail + 1) fit = Math.max(0.05, avail / natural);
   disp.style.transform = 'translate(-50%, -50%)' + (fit < 0.999 ? ' scale(' + fit.toFixed(4) + ')' : '');

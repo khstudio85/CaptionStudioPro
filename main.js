@@ -38,6 +38,10 @@ app.commandLine.appendSwitch('enable-accelerated-video-decode');
 let mainWindow;
 let currentExportCommand = null;
 let exportStartTime = 0;
+// Set by cancel-export so the encoder fallback ladder in _encodeCaptionVideo
+// does NOT treat a user-killed FFmpeg as "this encoder is unsupported" and
+// helpfully retry the whole encode with the next one.
+let exportCancelled = false;
 
 app.whenReady().then(createWindow);
 
@@ -476,6 +480,7 @@ ipcMain.handle('extract-audio-region', async (event, options) => {
 });
 
 ipcMain.handle('cancel-export', async () => {
+  exportCancelled = true;
   if(currentExportCommand) {
     try {
       currentExportCommand.kill('SIGKILL');
@@ -504,6 +509,7 @@ ipcMain.handle('export-with-overlay', async (event, options) => {
   return new Promise((resolve, reject) => {
     try {
       exportStartTime = Date.now();
+    exportCancelled = false;
       const [width, height] = resolution.split('x').map(Number);
       
       console.log('[Export] Overlay:', overlayImagePath);
@@ -634,9 +640,6 @@ function _cleanupDir(dir) {
   } catch(_) {}
 }
 
-// Shared encode step: composite a frame_%06d.png sequence (transparent caption
-// overlay) from `tmpDir` onto `videoPath` and mux original audio → outputPath.
-// Used by both the legacy array-based export and the streaming export.
 // Does this file actually contain a video stream? Audio-only sources (.aac, .mp3,
 // .wav …) have no [0:v], which made the overlay filtergraph fail with
 // "Stream specifier ':v' … matches no streams / Invalid argument".
@@ -650,86 +653,180 @@ function _hasVideoStream(filePath) {
   });
 }
 
-async function _encodeCaptionVideo(event, opts) {
-  const {
-    tmpDir, videoPath, outputPath,
-    width, height, fps = 30, trimIn, trimOut,
-    quality = 'high', useGPU = true, bgColor = '#000000'
-  } = opts;
+// ═══════════════════════════════════════════════════════════
+// ENCODER QUALITY LADDER
+// ═══════════════════════════════════════════════════════════
+// Why this exists: the old settings were `-cq 19 -b:v 0 -rc vbr` and nothing
+// else. NVENC's defaults are deliberately conservative — no B-frames, spatial
+// AQ off, no lookahead, no multipass, `main` profile — which for caption text
+// over video (hard edges, flat gradients, soft glow halos) gives both a LOWER
+// bitrate and visible banding/mush versus x264 at a nominally equal CQ. That is
+// the "low bitrate / doesn't look like the preview" complaint.
+//
+// A generous `-maxrate` ceiling matters too: some NVENC builds clamp to a low
+// internal default when `-b:v 0` is used with `-rc vbr` and no ceiling is given.
 
-  // Audio-only project (captions over a solid colour background)?
-  const hasVideo = await _hasVideoStream(videoPath);
-  // FFmpeg wants 0xRRGGBB; accept "#rrggbb" from the UI
-  const ffBg = '0x' + String(bgColor || '#000000').replace('#', '').slice(0, 6);
+// Bitrate ceiling derived from the pixel rate. This is a CEILING, not a target —
+// CQ/CRF still governs the actual rate; the ceiling only stops the encoder
+// starving detailed frames (and stops the NVENC `-b:v 0` clamp).
+function _rateCeilingKbps(width, height, fps, bpp) {
+  const pixRate = (width || 1920) * (height || 1080) * (fps || 30);
+  const mbps = (pixRate * bpp * 4) / 1e6;
+  return Math.round(Math.max(20, Math.min(250, mbps)) * 1000);
+}
+
+// Ordered list of encoder attempts. Each is tried in turn; if FFmpeg rejects one
+// (unsupported NVENC feature on an older GPU/driver, or no NVIDIA card at all)
+// the next runs. libx264 is always last so an export cannot hard-fail purely on
+// encoder options.
+function _encoderPlans(cfg) {
+  const quality = cfg.quality, useGPU = cfg.useGPU;
+  const width = cfg.width, height = cfg.height, fps = cfg.fps;
+
+  const gpuTiers = {
+    high:   { preset: 'p7', cq: '16', bpp: 0.12, lookahead: '32', aq: '8', abr: '256k' },
+    medium: { preset: 'p5', cq: '20', bpp: 0.08, lookahead: '20', aq: '8', abr: '192k' },
+    low:    { preset: 'p3', cq: '25', bpp: 0.05, lookahead: '8',  aq: '6', abr: '128k' }
+  };
+  const cpuTiers = {
+    high:   { preset: 'slow',     crf: '17', bpp: 0.12, abr: '256k' },
+    medium: { preset: 'medium',   crf: '20', bpp: 0.08, abr: '192k' },
+    low:    { preset: 'veryfast', crf: '24', bpp: 0.05, abr: '128k' }
+  };
+
+  const gt = gpuTiers[quality] || gpuTiers.high;
+  const ct = cpuTiers[quality] || cpuTiers.high;
+  const gpuCeil = _rateCeilingKbps(width, height, fps, gt.bpp);
+  const cpuCeil = _rateCeilingKbps(width, height, fps, ct.bpp);
+  const gop = String(Math.max(12, Math.round((fps || 30) * 2)));
+
+  const plans = [];
+
+  if(useGPU) {
+    // 1 · Full-quality NVENC (Turing / Ampere / Ada, FFmpeg 4.3+).
+    //     temporal-aq, b_ref_mode and multipass are the Turing+/newer-SDK
+    //     features that older cards reject outright, so they live only here.
+    plans.push({
+      name: 'NVENC (full quality)',
+      vcodec: 'h264_nvenc',
+      abitrate: gt.abr,
+      opts: [
+        '-preset', gt.preset, '-tune', 'hq',
+        '-rc', 'vbr', '-cq', gt.cq, '-b:v', '0',
+        '-maxrate', gpuCeil + 'k', '-bufsize', (gpuCeil * 2) + 'k',
+        '-rc-lookahead', gt.lookahead,
+        '-spatial-aq', '1', '-aq-strength', gt.aq, '-temporal-aq', '1',
+        '-multipass', 'fullres',
+        '-bf', '3', '-b_ref_mode', 'middle',
+        '-profile:v', 'high', '-level', '5.2', '-coder', 'cabac',
+        '-g', gop
+      ]
+    });
+    // 2 · Conservative NVENC (Pascal / Maxwell / older drivers) — same rate
+    //     control and spatial AQ, none of the Turing-only options.
+    plans.push({
+      name: 'NVENC (compatible)',
+      vcodec: 'h264_nvenc',
+      abitrate: gt.abr,
+      opts: [
+        '-preset', gt.preset,
+        '-rc', 'vbr', '-cq', gt.cq, '-b:v', '0',
+        '-maxrate', gpuCeil + 'k', '-bufsize', (gpuCeil * 2) + 'k',
+        '-rc-lookahead', gt.lookahead,
+        '-spatial-aq', '1', '-aq-strength', gt.aq,
+        '-bf', '2', '-profile:v', 'high', '-level', '5.2',
+        '-g', gop
+      ]
+    });
+  }
+
+  // 3 · x264. deblock=-1,-1 and aq-mode 3 are what keep caption edges and
+  //     gradient fills from smearing; psy-rd preserves the glow falloff.
+  plans.push({
+    name: 'CPU (libx264)',
+    vcodec: 'libx264',
+    abitrate: ct.abr,
+    opts: [
+      '-preset', ct.preset, '-crf', ct.crf,
+      '-maxrate', cpuCeil + 'k', '-bufsize', (cpuCeil * 2) + 'k',
+      '-profile:v', 'high', '-level', '5.2',
+      '-g', gop, '-threads', '0',
+      '-x264-params',
+      'aq-mode=3:aq-strength=1.0:deblock=-1,-1:psy-rd=1.0,0.15:ref=4:bframes=4:me=umh:subme=8:trellis=2'
+    ]
+  });
+
+  return plans;
+}
+
+// Run ONE encoder plan. Never touches tmpDir — the caller owns cleanup so a
+// failed plan can be retried with the rendered frames still on disk.
+function _runEncodePlan(event, opts, plan) {
+  const tmpDir = opts.tmpDir, videoPath = opts.videoPath, outputPath = opts.outputPath;
+  const width = opts.width, height = opts.height;
+  const fps = opts.fps, fpsExact = opts.fpsExact;
+  const trimIn = opts.trimIn, trimOut = opts.trimOut;
+  const hasVideo = opts.hasVideo;
 
   return new Promise((resolve, reject) => {
-    event.sender.send('export-progress', {
-      percent: 15, status: 'Merging video + audio + captions...', phase: 'merge'
-    });
-    console.log('[Export] Encoding from', tmpDir, '→', outputPath, width + 'x' + height + '@' + fps);
+    // Exact rational rate ("30000/1001") beats the rounded decimal: 29.97 drifts
+    // against the source over a long clip and desyncs the audio.
+    const rate = fpsExact || String(fps);
+    // FFmpeg wants 0xRRGGBB; accept "#rrggbb" from the UI
+    const ffBg = '0x' + String(opts.bgColor || '#000000').replace('#', '').slice(0, 6);
 
     const command = ffmpeg();
     currentExportCommand = command;
 
-    // Input 1: Original video (with audio)
+    // Input 1: original video (with audio)
     command.input(videoPath);
     if(trimIn && trimIn > 0) command.inputOptions(['-ss', String(trimIn)]);
     if(trimOut && trimOut !== null) {
       command.inputOptions(['-t', String(trimOut - (trimIn || 0))]);
     }
 
-    // Input 2: PNG sequence (captions overlay)
+    // Input 2: PNG sequence (transparent caption overlay)
     command.input(path.join(tmpDir, 'frame_%06d.png'));
-    command.inputOptions(['-framerate', String(fps), '-f', 'image2']);
+    command.inputOptions(['-framerate', rate, '-f', 'image2']);
 
-    // Filter: build the background, then overlay the caption PNG sequence.
-    //  • video source  → scale the real video
-    //  • audio-only    → synthesise a solid-colour canvas (there is no [0:v])
+    // ── ALPHA BLEND (deliberately unchanged) ─────────────────────────────
+    // Left at overlay's DEFAULT yuv420 blend. A 4:4:4 blend was tried here on
+    // the theory that it would preserve glow / soft edges, and it measured
+    // WORSE: yuva420p already carries ALPHA and LUMA at full resolution (only
+    // the overlay's *chroma* subsamples), so 4:4:4 buys almost nothing on the
+    // overlay while forcing the background through an extra 420→444→420 chroma
+    // round-trip. Against an RGB-domain lossless reference: yuv420 blend
+    // PSNR 44.2 / SSIM 0.9958, yuv444 blend 41.8 / 0.9928, rgb 43.8 / 0.9956.
+    // Extra swscale flags (accurate_rnd, full_chroma_int) also measured as noise
+    // on a real 1440x2560→720x1280 downscale. The washed-out / flat captions
+    // were never this filtergraph — they were the canvas renderer dropping
+    // shadow and glow layers (see _castShadowStack / _castGlow in
+    // caption-engine.js) plus the bare encoder settings below.
     const filterStr = hasVideo
       ? '[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[bg];' +
         '[1:v]scale=' + width + ':' + height + '[ov];' +
         '[bg][ov]overlay=0:0:shortest=1[out]'
-      : 'color=c=' + ffBg + ':s=' + width + 'x' + height + ':r=' + fps + ',setsar=1[bg];' +
+      : 'color=c=' + ffBg + ':s=' + width + 'x' + height + ':r=' + rate + ',setsar=1[bg];' +
         '[1:v]scale=' + width + ':' + height + '[ov];' +
         '[bg][ov]overlay=0:0:shortest=1[out]';
     command.complexFilter(filterStr);
-    console.log('[Export] Source has video:', hasVideo, hasVideo ? '' : '→ solid background ' + ffBg);
 
     const outputOpts = [
       '-map', '[out]',
       '-map', '0:a?',
       '-pix_fmt', 'yuv420p',
       '-movflags', '+faststart',
-      '-r', String(fps)
+      '-r', rate,
+      '-fps_mode', 'cfr'
     ];
 
-    if(useGPU) {
-      const gpuPresets = {
-        high:   { preset: 'p6', cq: '19' },
-        medium: { preset: 'p4', cq: '23' },
-        low:    { preset: 'p2', cq: '28' }
-      };
-      const gp = gpuPresets[quality] || gpuPresets.high;
-      command
-        .videoCodec('h264_nvenc')
-        .audioCodec('aac')
-        .audioBitrate('192k')
-        .outputOptions(outputOpts.concat(['-preset', gp.preset, '-cq', gp.cq, '-b:v', '0', '-rc', 'vbr']));
-      console.log('[Export] Using GPU (NVENC)');
-    } else {
-      const cpuPresets = {
-        high:   { preset: 'medium', crf: '20' },
-        medium: { preset: 'fast',   crf: '23' },
-        low:    { preset: 'veryfast', crf: '28' }
-      };
-      const cp = cpuPresets[quality] || cpuPresets.medium;
-      command
-        .videoCodec('libx264')
-        .audioCodec('aac')
-        .audioBitrate('192k')
-        .outputOptions(outputOpts.concat(['-preset', cp.preset, '-crf', cp.crf, '-threads', '0']));
-      console.log('[Export] Using CPU (libx264)');
-    }
+    command
+      .videoCodec(plan.vcodec)
+      .audioCodec('aac')
+      .audioBitrate(plan.abitrate)
+      .outputOptions(outputOpts.concat(plan.opts, ['-ar', '48000']));
+
+    console.log('[Export] Encoder:', plan.name, '|', width + 'x' + height + '@' + rate);
 
     command
       .on('start', (cmdLine) => console.log('[FFmpeg CMD]', cmdLine))
@@ -750,28 +847,86 @@ async function _encodeCaptionVideo(event, opts) {
       })
       .on('end', () => {
         currentExportCommand = null;
-        _cleanupDir(tmpDir);
-        let fileSize = 0;
-        try { fileSize = fs.statSync(outputPath).size; } catch(_) {}
-        const totalTime = (Date.now() - exportStartTime) / 1000;
-        console.log('[Export] SUCCESS in ' + totalTime.toFixed(1) + 's, ' + (fileSize / 1048576).toFixed(2) + 'MB');
-        event.sender.send('export-progress', {
-          percent: 100, status: 'Complete!', phase: 'complete', fileSize, totalTime
-        });
-        resolve({ success: true, outputPath, fileSize, totalTime });
+        resolve({ success: true });
       })
       .on('error', (err, stdout, stderr) => {
         currentExportCommand = null;
-        _cleanupDir(tmpDir);
-        console.error('[FFmpeg ERROR]', err.message);
-        if(stderr) console.error('[FFmpeg STDERR]', stderr);
-        event.sender.send('export-progress', {
-          percent: 0, status: 'Error: ' + err.message, phase: 'error'
-        });
-        reject({ success: false, error: err.message, stderr: stderr });
+        reject({ message: err.message, stderr: stderr });
       })
       .save(outputPath);
   });
+}
+
+// Shared encode step: composite a frame_%06d.png sequence (transparent caption
+// overlay) from `tmpDir` onto `videoPath` and mux the original audio →
+// outputPath. Tries each encoder plan in order so an unsupported NVENC feature
+// degrades to a working encoder instead of failing the whole export.
+// Used by both the legacy array-based export and the streaming export.
+async function _encodeCaptionVideo(event, opts) {
+  const tmpDir = opts.tmpDir;
+  const width = opts.width, height = opts.height;
+  const fps = opts.fps == null ? 30 : opts.fps;
+  const fpsExact = opts.fpsExact || null;
+  const quality = opts.quality || 'high';
+  const useGPU = opts.useGPU !== false;
+
+  // Audio-only project (captions over a solid colour background)?
+  const hasVideo = await _hasVideoStream(opts.videoPath);
+
+  event.sender.send('export-progress', {
+    percent: 15, status: 'Merging video + audio + captions...', phase: 'merge'
+  });
+  console.log('[Export] Encoding from', tmpDir, '→', opts.outputPath,
+              width + 'x' + height + '@' + (fpsExact || fps),
+              '| quality', quality, '| source has video:', hasVideo);
+
+  const plans = _encoderPlans({ quality: quality, useGPU: useGPU, width: width, height: height, fps: fps });
+  const planOpts = {
+    tmpDir: tmpDir, videoPath: opts.videoPath, outputPath: opts.outputPath,
+    width: width, height: height, fps: fps, fpsExact: fpsExact,
+    trimIn: opts.trimIn, trimOut: opts.trimOut,
+    bgColor: opts.bgColor || '#000000', hasVideo: hasVideo
+  };
+
+  let lastErr = null;
+  for(let i = 0; i < plans.length; i++) {
+    if(exportCancelled) break;              // user hit Cancel
+    try {
+      await _runEncodePlan(event, planOpts, plans[i]);
+      _cleanupDir(tmpDir);
+      let fileSize = 0;
+      try { fileSize = fs.statSync(opts.outputPath).size; } catch(_) {}
+      const totalTime = (Date.now() - exportStartTime) / 1000;
+      console.log('[Export] SUCCESS via ' + plans[i].name + ' in ' + totalTime.toFixed(1) + 's, ' +
+                  (fileSize / 1048576).toFixed(2) + 'MB');
+      event.sender.send('export-progress', {
+        percent: 100, status: 'Complete!', phase: 'complete',
+        fileSize: fileSize, totalTime: totalTime, encoder: plans[i].name
+      });
+      return { success: true, outputPath: opts.outputPath, fileSize: fileSize,
+               totalTime: totalTime, encoder: plans[i].name };
+    } catch(err) {
+      lastErr = err;
+      console.error('[Export] ' + plans[i].name + ' failed:', err.message);
+      if(err.stderr) console.error('[FFmpeg STDERR]', String(err.stderr).slice(-2000));
+      if(exportCancelled) break;
+      if(i < plans.length - 1) {
+        const next = plans[i + 1].name;
+        console.warn('[Export] Falling back to ' + next);
+        event.sender.send('export-progress', {
+          percent: 15, phase: 'merge',
+          status: plans[i].name + ' unavailable — retrying with ' + next
+        });
+      }
+    }
+  }
+
+  _cleanupDir(tmpDir);
+  const msg = exportCancelled
+    ? 'Export cancelled'
+    : ((lastErr && lastErr.message) || 'Encode failed');
+  event.sender.send('export-progress', { percent: 0, status: 'Error: ' + msg, phase: 'error' });
+  throw { success: false, error: msg, stderr: lastErr && lastErr.stderr };
 }
 
 // ── Legacy array-based export (kept for backward compatibility) ──
@@ -786,6 +941,7 @@ ipcMain.handle('export-frames-mode', async (event, options) => {
     let tmpDir = null;
     try {
       exportStartTime = Date.now();
+    exportCancelled = false;
       const [width, height] = resolution.split('x').map(Number);
       tmpDir = path.join(app.getPath('temp'), 'captionframes_' + Date.now());
       fs.mkdirSync(tmpDir, { recursive: true });
@@ -812,7 +968,8 @@ ipcMain.handle('export-frames-mode', async (event, options) => {
       currentExportCommand = null;
       _cleanupDir(tmpDir);
       console.error('[Export Setup Error]', err);
-      reject({ success: false, error: err.message });
+      // _encodeCaptionVideo rejects with {error}; setup errors are Errors with {message}
+      reject({ success: false, error: err.error || err.message });
     }
   });
 });
@@ -832,6 +989,7 @@ ipcMain.handle('export-init', async () => {
     fs.mkdirSync(dir, { recursive: true });
     exportSessions[id] = { dir };
     exportStartTime = Date.now();
+    exportCancelled = false;
     console.log('[Export] Streaming session', id, '→', dir);
     return { success: true, id, dir };
   } catch(err) {
@@ -854,7 +1012,7 @@ ipcMain.handle('export-add-frame', async (event, { id, index, dataUrl }) => {
 ipcMain.handle('export-encode', async (event, options) => {
   const {
     id, videoPath, outputPath,
-    resolution, fps = 30, trimIn, trimOut,
+    resolution, fps = 30, fpsExact = null, trimIn, trimOut,
     quality = 'high', useGPU = true, bgColor = '#000000'
   } = options;
 
@@ -864,7 +1022,8 @@ ipcMain.handle('export-encode', async (event, options) => {
   const [width, height] = resolution.split('x').map(Number);
   try {
     const result = await _encodeCaptionVideo(event, {
-      tmpDir: sess.dir, videoPath, outputPath, width, height, fps, trimIn, trimOut, quality, useGPU, bgColor
+      tmpDir: sess.dir, videoPath, outputPath, width, height,
+      fps, fpsExact, trimIn, trimOut, quality, useGPU, bgColor
     });
     delete exportSessions[id];   // dir already cleaned by _encodeCaptionVideo
     return result;
