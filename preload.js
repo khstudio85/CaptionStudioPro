@@ -19,16 +19,54 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   extractAudioRegion: (options) => ipcRenderer.invoke('extract-audio-region', options),
+
+  // Read ground-truth source video metadata (resolution/fps/codec/bitrate/audio)
+  probeVideo: (filePath) => ipcRenderer.invoke('probe-video', filePath),
+
+  // Native per-file waveform peaks (works for any file size)
+  getWaveformPeaks: (options) => ipcRenderer.invoke('extract-waveform', options),
+
+  // Last-project auto-save / one-click resume
+  saveLastProject: (jsonStr) => ipcRenderer.invoke('save-last-project', jsonStr),
+  loadLastProject: () => ipcRenderer.invoke('load-last-project'),
+
+  // ── Project store (multi-project: dashboard, save/load/rename/dup/delete) ──
+  projectsList:      () => ipcRenderer.invoke('projects-list'),
+  projectsLoad:      (id) => ipcRenderer.invoke('projects-load', id),
+  projectsSave:      (payload) => ipcRenderer.invoke('projects-save', payload),
+  projectsRename:    (payload) => ipcRenderer.invoke('projects-rename', payload),
+  projectsDuplicate: (payload) => ipcRenderer.invoke('projects-duplicate', payload),
+  projectsDelete:    (id) => ipcRenderer.invoke('projects-delete', id),
+  writeTextFile:     (payload) => ipcRenderer.invoke('write-text-file', payload),
   
   // NEW: Frame-based export (CapCut style)
   exportFramesMode: (options) => ipcRenderer.invoke('export-frames-mode', options),
   exportWithOverlay: (options) => ipcRenderer.invoke('export-with-overlay', options),
+
+  // Streaming export (memory-safe): init → add frames one by one → encode
+  exportInit: () => ipcRenderer.invoke('export-init'),
+  exportAddFrame: (options) => ipcRenderer.invoke('export-add-frame', options),
+  exportEncode: (options) => ipcRenderer.invoke('export-encode', options),
+  exportAbort: (options) => ipcRenderer.invoke('export-abort', options),
   
   cancelExport: () => ipcRenderer.invoke('cancel-export'),
   
   saveFileDialog: (options) => ipcRenderer.invoke('save-file-dialog', options),
   showInFolder: (path) => ipcRenderer.invoke('show-in-folder', path),
   
+  // ── Auto-update ──
+  updateCheck:      () => ipcRenderer.invoke('update-check'),
+  updateDownload:   () => ipcRenderer.invoke('update-download'),
+  updateInstallNow: () => ipcRenderer.invoke('update-install-now'),
+  getAppVersion:    () => ipcRenderer.invoke('update-app-version'),
+  onUpdateEvent: (callback) => {
+    const chans = ['update-available','update-none','update-progress','update-ready','update-error'];
+    chans.forEach(c => {
+      ipcRenderer.removeAllListeners(c);
+      ipcRenderer.on(c, (event, data) => callback(c, data));
+    });
+  },
+
   onExportProgress: (callback) => {
     ipcRenderer.removeAllListeners('export-progress');
     ipcRenderer.on('export-progress', (event, data) => callback(data));

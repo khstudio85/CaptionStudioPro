@@ -1,19 +1,25 @@
 {
   "name": "caption-studio-pro",
-  "version": "1.0.0",
+  "version": "1.0.9",
   "description": "Professional Video Caption Editor",
   "main": "main.js",
-  "author": "Your Name",
+  "author": "Hashim",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder --win nsis --publish never",
+    "release": "electron-builder --win nsis --publish always"
   },
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "electron-updater": "^6.8.9",
     "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "^2.1.2",
     "html-to-image": "^1.11.13"
@@ -21,5 +27,42 @@
   "trustedDependencies": [
     "electron",
     "ffmpeg-static"
-  ]
+  ],
+  "build": {
+    "appId": "com.captionstudio.pro",
+    "productName": "Caption Studio Pro",
+    "directories": {
+      "output": "dist"
+    },
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/@ffprobe-installer/**"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "khstudio85",
+        "repo": "CaptionStudioPro-releases"
+      }
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Caption Studio Pro"
+    }
+  }
 }

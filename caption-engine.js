@@ -6,6 +6,104 @@
 
 (function(global) {
   'use strict';
+
+  // ═══════════════════════════════════════════
+  // 0. SHARED TYPOGRAPHY PRIMITIVES
+  // Single source of truth for font resolution, used by the layout engine,
+  // the canvas renderer AND the DOM preview (via CaptionEngine.FONT_STYLE_MAP).
+  // Previously each had its own copy, which is how preview and export drifted.
+  // ═══════════════════════════════════════════
+
+  // UI font-style value → { weight, style }.
+  // NOTE: 'condensed' used to be missing here while the DOM preview had it, so
+  // choosing Condensed rendered at 700 in the editor but 400 in the export.
+  const FONT_STYLE_MAP = {
+    'regular':    { weight: 400, style: 'normal' },
+    'bold':       { weight: 700, style: 'normal' },
+    'italic':     { weight: 400, style: 'italic' },
+    'bolditalic': { weight: 700, style: 'italic' },
+    'light':      { weight: 300, style: 'normal' },
+    'medium':     { weight: 500, style: 'normal' },
+    'semibold':   { weight: 600, style: 'normal' },
+    'black':      { weight: 900, style: 'normal' },
+    'thin':       { weight: 100, style: 'normal' },
+    'extralight': { weight: 200, style: 'normal' },
+    'extrabold':  { weight: 800, style: 'normal' },
+    'condensed':  { weight: 700, style: 'normal' }
+  };
+
+  // The ONE canvas font shorthand. Keeps the full family list (so the fallback
+  // chain matches CSS) and the exact weight/style.
+  function fontShorthand(spec, sizePx) {
+    return (spec.fontStyle || 'normal') + ' ' + (spec.fontWeight || 400) +
+           ' ' + sizePx + 'px ' + spec.fontFamily;
+  }
+
+  // Apply the same letter-spacing to a context that drawing uses. Measuring
+  // without it made every word narrower than drawn → wrong wrapping/positions.
+  function applyLetterSpacing(ctx, spec, scale) {
+    if('letterSpacing' in ctx) {
+      ctx.letterSpacing = ((spec.letterSpacing || 0) * (scale || 1)) + 'px';
+    }
+  }
+
+  // ── Optical centre of the letters, shared by the canvas renderer AND the DOM
+  // preview so highlight bars sit identically in both. Returns the y offset from
+  // the em-box centre to the centre of the cap/ascender→baseline block.
+  // (Glyphs centre on the em box, which reserves descender space, so a word with
+  // no descenders — "would" — otherwise sits high in its bar.)
+  // Returns { centerY, letterH } in the same px units as fontPx:
+  //   letterH  = height of the visible letter block (cap top → baseline)
+  //   centerY  = y of that block's centre, measured from the drawing origin
+  //              (the origin is the em-box centre, where textBaseline='middle' sits)
+  // Sizing a bar as letterH + 2*padV and centring it on centerY puts EXACTLY padV
+  // above the letter tops and padV below the baseline — equal space top and bottom.
+  const _ocCache = Object.create(null);
+  function letterMetrics(spec, fontPx) {
+    const key = fontPx + '|' + spec.fontFamily + '|' + spec.fontWeight + '|' + spec.fontStyle;
+    if(key in _ocCache) return _ocCache[key];
+    let out = { centerY: 0, letterH: fontPx * 0.72, baseline: fontPx * 0.30 };
+    try {
+      const m = (letterMetrics._ctx ||
+        (letterMetrics._ctx = document.createElement('canvas').getContext('2d')));
+      m.font = fontShorthand(spec, fontPx);
+      m.textBaseline = 'alphabetic';
+      const cap = m.measureText('H');
+      const box = m.measureText('Hg');
+      const capH = (cap.actualBoundingBoxAscent > 0) ? cap.actualBoundingBoxAscent : fontPx * 0.72;
+      const A = (box.fontBoundingBoxAscent  != null) ? box.fontBoundingBoxAscent  : fontPx * 0.80;
+      const D = (box.fontBoundingBoxDescent != null) ? box.fontBoundingBoxDescent : fontPx * 0.20;
+      const baseline = (A - D) / 2;          // where textBaseline='middle' puts it
+      out = { centerY: baseline - capH / 2, letterH: capH, baseline: baseline };
+    } catch(_) {}
+    _ocCache[key] = out;
+    return out;
+  }
+  // Back-compat: just the centre offset
+  function opticalCenterOffset(spec, fontPx) { return letterMetrics(spec, fontPx).centerY; }
+
+  // CSS cubic-bezier(x1,y1,x2,y2) evaluator, so canvas animations use the SAME
+  // timing curve the preview's CSS keyframes use (Newton-Raphson on x, then y).
+  function cubicBezier(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const sampleX = t => ((ax * t + bx) * t + cx) * t;
+    const sampleY = t => ((ay * t + by) * t + cy) * t;
+    const slopeX  = t => (3 * ax * t + 2 * bx) * t + cx;
+    return function(x) {
+      if(x <= 0) return 0;
+      if(x >= 1) return 1;
+      let t = x;
+      for(let i = 0; i < 8; i++) {
+        const err = sampleX(t) - x;
+        if(Math.abs(err) < 1e-6) break;
+        const d = slopeX(t);
+        if(Math.abs(d) < 1e-6) break;
+        t -= err / d;
+      }
+      return sampleY(t);
+    };
+  }
   
   // ═══════════════════════════════════════════
   // 1. CAPTION STYLE SPECIFICATION
@@ -71,6 +169,7 @@
       this.positionX       = options.positionX       || 50;  // % from left
       this.positionY       = options.positionY       || 70;  // % from top
       this.maxWidth        = options.maxWidth        || 85;  // % of canvas width
+      this.maxWordsPerLine = options.maxWordsPerLine || 6;   // keep short captions on one line
       
       // === ANIMATION ===
       this.animationStyle  = options.animationStyle  || 0;   // 0-8 (which style)
@@ -102,22 +201,33 @@
       return new CaptionStyleSpec({ ...this.toJSON(), ...overrides });
     }
     
+    // THE typography scale — authored reference-space px → target-canvas px.
+    // Every getScaled* below and every effect scale in CaptionRenderer goes
+    // through here, so a caption cannot be responsive in one metric and fixed in
+    // another. `targetWidth` is optional only for older 1-arg call sites; when
+    // omitted it is derived from this spec's own canvas aspect so min() still
+    // means the same thing.
+    typeScale(targetWidth, targetHeight) {
+      const h = +targetHeight > 0 ? +targetHeight : this.canvasHeight;
+      const w = +targetWidth > 0
+        ? +targetWidth
+        : h * ((this.canvasWidth || CANVAS_REF_W) / (this.canvasHeight || CANVAS_REF_H));
+      return canvasTypeScale(w, h);
+    }
+
     // Get scaled font size for a target canvas
-    getScaledFontSize(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return Math.max(4, Math.round(this.fontSize * scale));
+    getScaledFontSize(targetHeight, targetWidth) {
+      return Math.max(4, Math.round(this.fontSize * this.typeScale(targetWidth, targetHeight)));
     }
-    
+
     // Get scaled stroke width for a target canvas
-    getScaledStrokeWidth(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return this.strokeWidth * scale;
+    getScaledStrokeWidth(targetHeight, targetWidth) {
+      return this.strokeWidth * this.typeScale(targetWidth, targetHeight);
     }
-    
+
     // Get scaled letter spacing
-    getScaledLetterSpacing(targetHeight) {
-      const scale = targetHeight / this.canvasHeight;
-      return this.letterSpacing * scale;
+    getScaledLetterSpacing(targetHeight, targetWidth) {
+      return this.letterSpacing * this.typeScale(targetWidth, targetHeight);
     }
     
     // Get position in pixels for target canvas
@@ -129,6 +239,41 @@
     }
   }
   
+  // ═══════════════════════════════════════════
+  // RESPONSIVE CANVAS TYPOGRAPHY SCALE
+  // ═══════════════════════════════════════════
+  // Every typography metric — font size, letter/word spacing, line spacing,
+  // stroke, shadow distance & blur, glow, highlight & bar padding — is authored
+  // against ONE reference frame and scaled to whatever canvas is active.
+  //
+  // Before this, `fontSize` was a literal canvas-space pixel value. Swapping a
+  // 9:16 canvas (1080x1920) for a 16:9 one (1920x1080) kept the same px while the
+  // frame got 1.78x NARROWER, so the caption grew to 1.78x its relative width and
+  // ran off the left/right edges. Auto-fit only rescued the overflow *after* it
+  // happened, which is why some styles looked fine and others clipped.
+  //
+  // min() — a "fit" scale — is deliberate. It makes the font a constant fraction
+  // of frame HEIGHT at every aspect ratio (the perceptual measure for type), and
+  // because no supported preset is narrower than the reference, the caption's
+  // horizontal footprint can only ever SHRINK as the frame widens. Clipping
+  // becomes structurally impossible instead of something auto-fit must catch.
+  //
+  //   9:16 1080x1920 -> 1.0000      16:9 1920x1080 -> 0.5625
+  //   1:1  1080x1080 -> 0.5625      4:5  1080x1350 -> 0.7031
+  //
+  // Exported as CaptionEngine.canvasTypeScale so the DOM preview scales by the
+  // exact same number — one formula, no second implementation to drift.
+  const CANVAS_REF_W = 1080;
+  const CANVAS_REF_H = 1920;
+  // Safety margin (percentage points) held back from the position-derived half of
+  // the max-width box. Shared with the DOM preview via CaptionEngine.
+  const EDGE_INSET_PCT = 1;
+  function canvasTypeScale(canvasW, canvasH) {
+    const w = +canvasW > 0 ? +canvasW : CANVAS_REF_W;
+    const h = +canvasH > 0 ? +canvasH : CANVAS_REF_H;
+    return Math.min(w / CANVAS_REF_W, h / CANVAS_REF_H);
+  }
+
   // ═══════════════════════════════════════════
   // 2. ANIMATION ENGINE
   // Frame-accurate animation calculations
@@ -278,14 +423,22 @@
       const activeOp = (props.activeOpacity || 100) / 100;
       const activeScale = (props.activeScale || 106) / 100;
       const activeColor = props.activeColor || spec.color;
-      
+      // Optional active-word size boost, folded into `scale`.
+      // IMPORTANT: this is a pure TRANSFORM, not a layout change. Laying the word
+      // out at the bigger size reserved extra width and pushed every other word
+      // sideways (and could force an extra line). A transform grows the word in
+      // place, so all inactive words keep their exact positions.
+      const sizeOn  = !!props.activeSizeOn;
+      const sizeMul = sizeOn ? (+props.activeSizeMul || 1) : 1;
+
       return {
         words: group.words.map((_, i) => {
           const isActive = i === activeIdx;
           const isSpoken = i < activeIdx;
           return {
             opacity: isActive ? activeOp : (isSpoken ? spokenOp : dimOp),
-            scale: isActive ? activeScale : 1,
+            scale: isActive ? activeScale * sizeMul : 1,
+            anchorBottom: true,          // grow UPWARD from the baseline
             x: 0, y: 0,
             color: isActive ? activeColor : spec.color,
             bgColor: null,
@@ -374,47 +527,73 @@
     styleBorderPopUp(spec, group, currentTime) {
       const activeIdx = this.getActiveWordIndex(group, currentTime);
       const props = spec.styleProps[7] || {};
-      const bounceScale = (props.bounceScale || 118) / 100;
+      // Defaults match the inline preview's subtle Border Pop Up (bar 100%,
+      // gentle 104% bounce) so export and preview agree.
+      const bounceScale = (props.bounceScale || 104) / 100;
       const padH = props.padH || 8;
       const padV = props.padV || 5;
       const radius = props.barRadius || 7;
-      const bgOp = (props.bgOpacity || 88) / 100;
-      
+      const bgOp = (props.bgOpacity != null ? props.bgOpacity : 100) / 100;
+
+      // ── Match the DOM preview EXACTLY (renderStyle7 in index.html) ──
+      // There, two separate things happen to an active word:
+      //   1. the CHIP (word + bar) gets a STATIC transform: scale(hlScale/100)
+      //      — the "Active Words Highlights → Scale" value. It is NOT animated.
+      //   2. the BAR (a child span) runs the bounce keyframes:
+      //        0% → 1.0 · delayPct% → 1.0 · peakPct% → bounceScale · 100% → 1.0
+      //      over the word's duration, eased with the style's cubic-bezier.
+      // The export used to bounce the WORD itself (and never the bar), which is
+      // why exported words scaled up while the preview only popped the bar.
+      const hlScale = spec.highlightScale || 1;   // static word scale
+      const b1x = props.bez1x != null ? props.bez1x : 0.25;
+      const b1y = props.bez1y != null ? props.bez1y : 1.0;
+      const b2x = props.bez2x != null ? props.bez2x : 0.5;
+      const b2y = props.bez2y != null ? props.bez2y : 1.0;
+      const ease = cubicBezier(b1x, b1y, b2x, b2y);
+
       return {
         words: group.words.map((_, i) => {
           const isActive = i === activeIdx && spec.highlightEnabled;
-          let scale = 1;
-          let barVisible = false;
-          
-          if(isActive) {
-            const wt = group.wordTimes[i];
-            const wordDur = wt.end - wt.start;
-            const localTime = currentTime - wt.start;
-            const peakTime = wordDur * 0.35;
-            
-            if(localTime < peakTime) {
-              const t = localTime / peakTime;
-              scale = 1 + (bounceScale - 1) * this.easeOutBack(t);
-            } else {
-              const t = (localTime - peakTime) / (wordDur - peakTime);
-              scale = bounceScale - (bounceScale - 1) * this.easeInOut(t);
-            }
-            barVisible = true;
+          if(!isActive) {
+            return {
+              opacity: 1, scale: 1, x: 0, y: 0,
+              color: spec.color, bgColor: null, highlighted: false, wordBar: null
+            };
           }
-          
+
+          // Bar bounce, evaluated from the frame timestamp (deterministic)
+          const wt = group.wordTimes[i] || { start: currentTime, end: currentTime + 0.4 };
+          const wordDurMs  = Math.max(120, Math.round((wt.end - wt.start) * 1000));
+          const startDelay = Math.min(props.startDelay != null ? props.startDelay : 50, wordDurMs * 0.35);
+          const delayPct   = +(startDelay / wordDurMs * 100).toFixed(1);
+          const peakPct    = Math.max(delayPct + 8,
+                              Math.min(props.bouncePeakAt != null ? props.bouncePeakAt : 70, 78));
+          // CSS animations run once with `forwards`, so clamp past 100%
+          const pct = Math.max(0, Math.min(100, ((currentTime - wt.start) * 1000 / wordDurMs) * 100));
+
+          let barScale;
+          if(pct <= delayPct) {
+            barScale = 1;                                        // pre-delay hold
+          } else if(pct <= peakPct) {
+            const seg = (peakPct - delayPct) > 0 ? (pct - delayPct) / (peakPct - delayPct) : 1;
+            barScale = 1 + (bounceScale - 1) * ease(seg);         // rise to the bounce
+          } else {
+            const seg = (100 - peakPct) > 0 ? (pct - peakPct) / (100 - peakPct) : 1;
+            barScale = bounceScale + (1 - bounceScale) * ease(seg); // settle back to 1
+          }
+
           return {
             opacity: 1,
-            scale,
+            scale: hlScale,          // STATIC — same as the DOM chip transform
             x: 0, y: 0,
-            color: isActive ? spec.highlightTextColor : spec.color,
+            color: spec.highlightTextColor,
             bgColor: null,
-            highlighted: isActive,
-            wordBar: barVisible ? {
+            highlighted: true,
+            wordBar: {
               color: this.hexAlpha(spec.highlightBgColor, bgOp),
-              radius,
-              padH,
-              padV
-            } : null
+              radius, padH, padV,
+              scale: barScale        // ONLY the bar animates
+            }
           };
         }),
         containerOpacity: 1
@@ -486,38 +665,50 @@
     }
     
     // Measure single word width
-    measureWord(word, spec, targetHeight) {
-      const fontSize = spec.getScaledFontSize(targetHeight);
-      const fontFamily = spec.fontFamily.replace(/['"]/g, '').split(',')[0].trim();
-      const fontWeight = spec.fontWeight;
-      const fontStyle = spec.fontStyle;
-      
-      this.ctx.font = fontStyle + ' ' + fontWeight + ' ' + fontSize + 'px "' + fontFamily + '"';
+    measureWord(word, spec, targetHeight, sizeMul, targetWidth) {
+      // sizeMul lets one word (e.g. the Opacity Cascade active word) be measured
+      // at a larger size so the line reserves the right width for it.
+      const fontSize = spec.getScaledFontSize(targetHeight, targetWidth) * (sizeMul || 1);
+      // Measure with EXACTLY what we draw with:
+      //  • the full family list (was: first family only → different fallback,
+      //    so metrics diverged from the drawn glyphs)
+      //  • the same letter-spacing (was: omitted → every word measured narrower
+      //    than it renders, shifting positions and changing line wrapping)
+      this.ctx.font = fontShorthand(spec, fontSize);
+      applyLetterSpacing(this.ctx, spec, spec.typeScale(targetWidth, targetHeight));
       return this.ctx.measureText(this.applyCase(word, spec.textTransform)).width;
     }
     
     // Layout entire caption group — returns positions for each word
-    layoutGroup(group, spec, targetWidth, targetHeight) {
-      const fontSize = spec.getScaledFontSize(targetHeight);
-      const letterSp = spec.getScaledLetterSpacing(targetHeight);
+    layoutGroup(group, spec, targetWidth, targetHeight, sizeMulFn) {
+      const tScale   = spec.typeScale(targetWidth, targetHeight);
+      const fontSize = spec.getScaledFontSize(targetHeight, targetWidth);
+      const letterSp = spec.getScaledLetterSpacing(targetHeight, targetWidth);
       const wordGap  = spec.wordSpacing === 0
         ? fontSize * 0.27
-        : Math.max(0, (fontSize * 0.27) + (spec.wordSpacing * targetHeight / spec.canvasHeight));
+        : Math.max(0, (fontSize * 0.27) + (spec.wordSpacing * tScale));
       
       const pos = spec.getPixelPosition(targetWidth, targetHeight);
       const maxLineWidth = (spec.maxWidth / 100) * targetWidth;
       
-      // Measure all words
-      const wordData = group.words.map(word => ({
-        text: this.applyCase(word, spec.textTransform),
-        width: this.measureWord(word, spec, targetHeight)
-      }));
-      
+      const wordData = group.words.map((word, wi) => {
+        const mul = sizeMulFn ? (sizeMulFn(wi) || 1) : 1;
+        return {
+          text: this.applyCase(word, spec.textTransform),
+          width: this.measureWord(word, spec, targetHeight, mul, targetWidth),
+          size: fontSize * mul,   // px size this word is drawn at
+          mul: mul
+        };
+      });
+
       // Build lines respecting maxWidth and line breaks
       const lines = [];
       let currentLine = [];
       let currentWidth = 0;
-      
+      // Keep short captions on a single line (auto-fit handles any overflow)
+      const maxWordsPerLine = spec.maxWordsPerLine || 6;
+      const keepOneLine = !spec.lineBreakEnabled && group.words.length <= maxWordsPerLine;
+
       wordData.forEach((word, i) => {
         const wordWidthWithGap = word.width + (currentLine.length > 0 ? wordGap : 0);
         
@@ -529,7 +720,16 @@
           return;
         }
         
-        // Auto wrap
+        // Auto wrap.
+        // A short caption (≤ maxWordsPerLine, default 6) is kept on ONE line even
+        // if it's slightly wider than the box — the renderer's auto-fit shrinks it
+        // instead. Wrapping a 5-word caption to a second line for a few pixels is
+        // what produced the stray word on its own line.
+        if(keepOneLine) {
+          currentLine.push(word);
+          currentWidth += wordWidthWithGap;
+          return;
+        }
         if(currentWidth + wordWidthWithGap > maxLineWidth && currentLine.length > 0) {
           lines.push(currentLine);
           currentLine = [word];
@@ -569,6 +769,7 @@
             y: lineY,
             width: word.width,
             height: fontSize,
+            size: word.size || fontSize,   // px size THIS word is drawn at
             lineIdx: lineIdx
           });
           cursorX += word.width + wordGap;
@@ -688,20 +889,9 @@
       
       // Font weight mapping
       const fontStyleValue = g('fontStyleSelect', 'value', 'regular');
-      const fsMap = {
-        'regular':    { weight: 400, style: 'normal' },
-        'bold':       { weight: 700, style: 'normal' },
-        'italic':     { weight: 400, style: 'italic' },
-        'bolditalic': { weight: 700, style: 'italic' },
-        'light':      { weight: 300, style: 'normal' },
-        'medium':     { weight: 500, style: 'normal' },
-        'semibold':   { weight: 600, style: 'normal' },
-        'black':      { weight: 900, style: 'normal' },
-        'thin':       { weight: 100, style: 'normal' },
-        'extralight': { weight: 200, style: 'normal' },
-        'extrabold':  { weight: 800, style: 'normal' }
-      };
-      const fs = fsMap[fontStyleValue] || fsMap.regular;
+      // Shared map — the DOM preview reads the same table, so a weight can never
+      // mean one thing in the editor and another in the export.
+      const fs = FONT_STYLE_MAP[fontStyleValue] || FONT_STYLE_MAP.regular;
       
       // Detect canvas size
       const canvasW = typeof getCanvasWidth === 'function' ? getCanvasWidth() : 1920;
@@ -724,8 +914,13 @@
       const lbEnabled = typeof lineBreakEnabled !== 'undefined' ? lineBreakEnabled : false;
       const lbAt = typeof lineBreakAt !== 'undefined' ? lineBreakAt : 1;
       
-      // Shadows
-      const shadowsArr = typeof shadows !== 'undefined' && Array.isArray(shadows) ? shadows : [];
+      // Shadows — gated on the Text-panel toggle. buildShadowCSS() in index.html
+      // returns '' when shadowEnabled is off, but this collector used to hand the
+      // shadows[] array over unconditionally, so turning shadows OFF removed them
+      // from the preview while the export still burned them in.
+      const shadowsOn = gc('shadowEnabled', false);
+      const shadowsArr = (shadowsOn && typeof shadows !== 'undefined' && Array.isArray(shadows))
+        ? shadows : [];
       
       return new CaptionStyleSpec({
         // Typography
@@ -735,7 +930,10 @@
         fontStyle:      isItalic ? 'italic' : fs.style,
         letterSpacing:  gn('letterSpacing', 0),
         lineHeight:     1 + (gn('lineSpacing', 0) / 100),
-        wordSpacing:    gn('wordGap', 0),
+        // Global Word Spacing (Text panel) + the active style's optional extra
+        // offset, so the export uses the same single effective value as the preview.
+        wordSpacing:    gn('wordGap', 0) +
+                        (((styleProps && styleProps[currentStyle]) || {}).wordGapExtra || 0),
         textTransform:  textCase,
         textAlign:      textAlign,
         
@@ -780,6 +978,7 @@
         positionX:      gn('posX', 50),
         positionY:      gn('posY', 70),
         maxWidth:       gn('maxWidth', 85),
+        maxWordsPerLine: (typeof wordsPerGroup !== 'undefined' ? Math.max(6, wordsPerGroup) : 6),
         
         // Animation
         animationStyle:    currentStyle,
@@ -801,16 +1000,571 @@
   }
   
   // ═══════════════════════════════════════════
+  // 6. CAPTION RENDERER (Canvas 2D)
+  // The ONE draw routine — consumed by both the
+  // preview and the export so pixels match.
+  // Deterministic: renderFrame(ctx, spec, group, t, W, H)
+  // draws the caption for time t at any resolution.
+  // ═══════════════════════════════════════════
+
+  class CaptionRenderer {
+    constructor() {
+      this.anim   = new AnimationEngine();
+      this.layout = new TextLayoutEngine();
+      // Reusable offscreen canvas for per-word glyph compositing (shadows/glow).
+      this._wc = (typeof document !== 'undefined') ? document.createElement('canvas') : null;
+      this._wctx = this._wc ? this._wc.getContext('2d') : null;
+    }
+
+    // ── Font readiness (fail loudly, never silently fall back) ──
+    // Canvas 2D substitutes a fallback SILENTLY, and document.fonts.check() can
+    // report true for a family that canvas won't actually resolve at the wanted
+    // weight. So we (1) load the exact weight/style, (2) wait for fonts.ready,
+    // (3) verify by MEASURING: if the requested family renders identically to a
+    // deliberately bogus family, the browser fell back → report failure.
+    // Returns { ok, family, weight, style, reason }.
+    async ensureFont(spec) {
+      const family = (spec.fontFamily || '').replace(/['"]/g, '').split(',')[0].trim();
+      const weight = spec.fontWeight || 400;
+      const style  = spec.fontStyle || 'normal';
+      const out = { ok: true, family, weight, style, reason: '' };
+      if(typeof document === 'undefined' || !document.fonts) return out;
+
+      const decl = style + ' ' + weight + ' 64px "' + family + '"';
+      try { await document.fonts.load(decl); } catch(_) {}
+      try { await document.fonts.ready; } catch(_) {}
+
+      if(!document.fonts.check(decl)) {
+        out.ok = false;
+        out.reason = 'not loaded';
+        return out;
+      }
+
+      // Measurement proof: compare against a family that cannot exist.
+      try {
+        const c = document.createElement('canvas').getContext('2d');
+        const probe = 'AGWMinq 123 — wm';
+        c.font = style + ' ' + weight + ' 64px "' + family + '", monospace';
+        const w1 = c.measureText(probe).width;
+        c.font = style + ' ' + weight + ' 64px "__csp_no_such_font__", monospace';
+        const w2 = c.measureText(probe).width;
+        if(Math.abs(w1 - w2) < 0.01) {
+          out.ok = false;
+          out.reason = 'canvas fell back to a substitute font';
+        }
+      } catch(_) { /* keep the fonts.check() result */ }
+      return out;
+    }
+
+    // Delegates to the shared builder so layout + drawing can never diverge
+    fontString(spec, sizePx) { return fontShorthand(spec, sizePx); }
+
+    // hex (#rgb/#rrggbb) + alpha → rgba() string
+    _rgba(hex, alpha) {
+      if(typeof hex !== 'string') return hex;
+      let c = hex.replace('#', '');
+      if(c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+      const r = parseInt(c.substring(0,2),16) || 0;
+      const g = parseInt(c.substring(2,4),16) || 0;
+      const b = parseInt(c.substring(4,6),16) || 0;
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + (alpha == null ? 1 : alpha) + ')';
+    }
+
+    // Linear gradient across a text box, matching the CSS gradientAngle used in
+    // the preview (0deg = to top, clockwise). Mirrors makeTextGradient in index.html.
+    _makeGradient(ctx, spec, x0, y0, x1, y1) {
+      const angle = (Number(spec.gradientAngle) || 135) * Math.PI / 180;
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const w = x1 - x0, h = y1 - y0;
+      const len = Math.sqrt(w*w + h*h) / 2 || 1;
+      const dx = Math.sin(angle), dy = -Math.cos(angle);
+      const g = ctx.createLinearGradient(cx - dx*len, cy - dy*len, cx + dx*len, cy + dy*len);
+      g.addColorStop(0, spec.gradientColor1 || '#FF512F');
+      g.addColorStop(1, spec.gradientColor2 || '#F09819');
+      return g;
+    }
+
+    // ── Optical vertical centre of the letters ──────────────────────────────
+    // Glyphs are drawn with textBaseline='middle', which centres the EM BOX —
+    // and the em box reserves descender space. So a word with no descenders
+    // ("would") ends up sitting high in its highlight bar, with a visible gap
+    // underneath. This returns the y offset from the drawing origin to the
+    // optical centre of the cap/ascender→baseline block, so bars can be centred
+    // on the letters instead of on the em box.
+    // Font-level metrics (not per-word bounds) keep every word's bar aligned.
+    _opticalCenterY(spec, fontPx) { return opticalCenterOffset(spec, fontPx); }
+
+    _roundRectPath(ctx, x, y, w, h, r) {
+      r = Math.max(0, Math.min(r, w/2, h/2));
+      ctx.beginPath();
+      ctx.moveTo(x+r, y);
+      ctx.arcTo(x+w, y,   x+w, y+h, r);
+      ctx.arcTo(x+w, y+h, x,   y+h, r);
+      ctx.arcTo(x,   y+h, x,   y,   r);
+      ctx.arcTo(x,   y,   x+w, y,   r);
+      ctx.closePath();
+    }
+
+    // Render a single styled word (stroke + fill/gradient) into the reusable
+    // offscreen canvas, centered. Returns { canvas, w, h }.
+    _renderWordGlyph(text, spec, fillStyle, fontPx, scale) {
+      const ctx = this._wctx;
+      ctx.font = this.fontString(spec, fontPx);
+      const metrics = ctx.measureText(text);
+      const strokeW = (spec.strokeEnabled && spec.strokeWidth > 0)
+        ? Math.max(1, spec.strokeWidth * scale) : 0;
+      const pad = Math.ceil(strokeW + fontPx * 0.35 + 4);
+      const w = Math.ceil(metrics.width) + pad * 2;
+      const h = Math.ceil(fontPx * 1.6) + pad * 2;
+      this._wc.width = w;
+      this._wc.height = h;
+
+      // measure/font reset after resize (resizing clears context state)
+      ctx.font = this.fontString(spec, fontPx);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if('letterSpacing' in ctx) ctx.letterSpacing = (spec.letterSpacing ? spec.letterSpacing * scale : 0) + 'px';
+      ctx.lineJoin = 'round';
+
+      const cx = w/2, cy = h/2;
+
+      // Fill: gradient (spans this word's box) takes precedence — matches the
+      // DOM's -webkit-text-fill-color behavior where gradient overrides color.
+      let fill = fillStyle;
+      if(spec.gradientEnabled) {
+        fill = this._makeGradient(ctx, spec, pad, pad, w - pad, h - pad);
+      }
+
+      // Stroke first, then fill on top (paint-order: stroke fill).
+      if(strokeW > 0) {
+        ctx.strokeStyle = spec.strokeColor || '#000';
+        ctx.lineWidth = strokeW * 2; // canvas stroke is centered; *2 ≈ CSS text-stroke width outside
+        ctx.strokeText(text, cx, cy);
+      }
+      ctx.fillStyle = fill;
+      ctx.fillText(text, cx, cy);
+
+      return { canvas: this._wc, w, h };
+    }
+
+    // Cast a blurred shadow of `srcCanvas` onto ctx at (dx,dy) using the
+    // off-canvas shift trick so only the shadow (not the source) is visible.
+    _castShadow(ctx, srcCanvas, dx, dy, offX, offY, blur, color) {
+      const SHIFT = 20000;
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = blur;
+      ctx.shadowOffsetX = offX + SHIFT;
+      ctx.shadowOffsetY = offY;
+      ctx.drawImage(srcCanvas, dx - SHIFT, dy);
+      ctx.restore();
+    }
+
+    // ── SHADOW STACK (export ↔ preview parity) ────────────────────────────
+    // The DOM preview does NOT paint one shadow per shadow entry: buildShadowCSS()
+    // in index.html expands every entry into a 7-layer text-shadow stack (contact /
+    // key / mid / soft penumbra / far halo / ambient spread / highlight rim). Casting
+    // a single flat layer here is why exported shadows looked thin and lifeless next
+    // to the preview. This mirrors that expansion layer-for-layer, in the same order,
+    // with the same multipliers — CSS blur radius and canvas shadowBlur are both
+    // 2x-sigma, so the px values carry over 1:1.
+    //
+    // `sh.opacity` is a 0-100 slider value (same as the UI), NOT a 0-1 alpha —
+    // passing it straight to rgba() clamped every shadow to fully opaque and made
+    // the opacity slider a no-op in the exported file.
+    _castShadowStack(ctx, glyphCanvas, gx, gy, sh, scale) {
+      if(!sh) return;
+      const rad  = ((sh.angle || 0) * Math.PI) / 180;
+      const x    = Math.cos(rad) * (sh.dist || 0) * scale;
+      const y    = Math.sin(rad) * (sh.dist || 0) * scale;
+      const blur = (sh.size || 0) * scale;
+      // 0-100 → 0-1. Values <= 1 are treated as already-normalised alpha so a
+      // project saved with a 0-1 opacity does not become invisible.
+      const rawOp = (sh.opacity == null) ? 100 : sh.opacity;
+      const op    = rawOp > 1 ? rawOp / 100 : rawOp;
+      const sp    = (sh.spread || 0) * scale;
+      const col   = sh.color || '#000000';
+      const cast  = (ox, oy, b, a) => {
+        if(a <= 0.004) return;
+        this._castShadow(ctx, glyphCanvas, gx, gy, ox, oy, Math.max(0, b), this._rgba(col, +a.toFixed(4)));
+      };
+
+      // 1 · contact shadow (ambient occlusion — very tight, darker)
+      cast(x * 0.15, y * 0.15, Math.max(1, Math.round(blur * 0.15)), Math.min(0.95, op + 0.15));
+      // 2 · key shadow (sharp, light penumbra)
+      cast(x * 0.5,  y * 0.5,  Math.max(2, Math.round(blur * 0.5)),  op * 0.85);
+      // 3 · mid shadow (the exact distance + blur the user set)
+      cast(x,        y,        blur,                                 op);
+      // 4 · soft penumbra
+      cast(x * 1.3,  y * 1.3,  Math.round(blur * 2.0 + 6),           op * 0.4);
+      // 5 · far halo (wide diffuse)
+      cast(x * 1.6,  y * 1.6,  Math.round(blur * 3.5 + 12),          op * 0.18);
+      // 6 · ambient spread (centred, only when spread > 0)
+      if(sp > 0) {
+        cast(0, 0, Math.round(blur * 0.8 + sp * 2), op * 0.5);
+        cast(0, 0, Math.round(blur * 1.8 + sp * 4), op * 0.25);
+      }
+      // 7 · highlight rim (inverse direction, only on softer shadows)
+      if(blur > 4) cast(-x * 0.08, -y * 0.08, Math.max(1, Math.round(blur * 0.3)), op * 0.15);
+    }
+
+    // ── GLOW (export ↔ preview parity) ────────────────────────────────────
+    // onGlowChange() in index.html builds a THREE layer glow:
+    //   0 0 {intensity}px {c}, 0 0 {spread}px {c}88, 0 0 {spread*1.8}px {c}44
+    // The export used to cast only the tight `intensity` layer (twice, to fake
+    // strength) and ignored glowSpread entirely — so the wide halo that actually
+    // reads as "glow" never made it into the video. 0x88 = 0.533, 0x44 = 0.267.
+    _castGlow(ctx, glyphCanvas, gx, gy, glow, scale) {
+      if(!glow) return;
+      const intensity = (glow.size || 0) * scale;
+      // Per-word ANIMATION glow (ws.glow) carries no spread, and the preview paints
+      // it as a single `0 0 {glowSize}px` layer (see the chip.style.textShadow line
+      // in index.html) — so spread 0 here is exact parity, not a missing value. Only
+      // the UI glow panel supplies glowSpread and gets the wide halo.
+      const spread = (glow.spread != null ? glow.spread : 0) * scale;
+      const col = glow.color || '#ffffff';
+      if(intensity <= 0 && spread <= 0) return;
+      if(intensity > 0) this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, intensity, col);
+      if(spread > 0) {
+        this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, spread, this._rgba(col, 0.533));
+        this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, spread * 1.8, this._rgba(col, 0.267));
+      }
+    }
+
+    // ── ONE-UNIT WORD LAYER: text + glow + drop shadow ───────────────────
+    // Everything belonging to a word is rasterised into a single offscreen layer
+    // under an IDENTITY transform, then drawn ONCE under the word's transform.
+    // Two reasons this is the only correct structure:
+    //
+    // 1. CORRECTNESS. ctx.shadowOffsetX/Y are NOT transformed by the CTM, but
+    //    drawImage() coordinates ARE. _castShadow() hides its source by drawing
+    //    it at -SHIFT and pulling the shadow back with +SHIFT, so the two cancel
+    //    ONLY while the CTM has no scale. Under ctx.scale(s) the shadow lands
+    //    20000*(s-1) px away — ~800px off for style 7's 1.04 bounce, ~12000px
+    //    for style 3's 1.6 active word — i.e. far off-canvas and invisible. Glow
+    //    and drop shadows silently vanished on exactly the frames where a word
+    //    was mid-animation, which is why exported glow looked like detached
+    //    blobs instead of a halo following the text. Compositing at identity
+    //    transform makes the SHIFT trick exact again.
+    //
+    // 2. NO EFFECT DRIFT. Text, glow and shadow inherit ONE transform matrix, so
+    //    they translate, scale and fade as a single visual unit and cannot drift
+    //    apart. This also matches the DOM, where a CSS transform on a chip
+    //    scales the element together with its text-shadow output.
+    //
+    // Paint order inside the layer is back→front: DROP SHADOW → GLOW → SHARP
+    // TEXT, so the glow sits between the shadow and the crisp glyph and the
+    // original font is never obscured.
+    //
+    // The layer is padded by the widest bleed any effect can cast, otherwise the
+    // glow would clip to a hard-edged box at the layer boundary.
+    _composeWordLayer(text, spec, fillColor, wSize, scale, shadowsArr, glow) {
+      const glyph = this._renderWordGlyph(text, spec, fillColor, wSize, scale);
+
+      // How far outside the glyph box can anything paint? shadowBlur B is a
+      // Gaussian of sigma B/2, so 2*B covers >4 sigma — visually all of it.
+      // The multipliers mirror the widest layers _castShadowStack casts
+      // (far halo blur*3.5+12, ambient spread blur*1.8+sp*4, offset dist*1.6).
+      let bleed = 0;
+      (shadowsArr || []).forEach(sh => {
+        if(!sh) return;
+        const dist = Math.abs(sh.dist  || 0) * scale;
+        const blur = Math.abs(sh.size  || 0) * scale;
+        const sp   = Math.abs(sh.spread || 0) * scale;
+        bleed = Math.max(bleed,
+                         dist * 1.6 + (blur * 3.5 + 12) * 2,
+                         (blur * 1.8 + sp * 4) * 2);
+      });
+      if(glow) {
+        const gi = Math.abs(glow.size || 0) * scale;
+        const gs = Math.abs(glow.spread != null ? glow.spread : 0) * scale;
+        bleed = Math.max(bleed, gi * 2, gs * 1.8 * 2);
+      }
+      bleed = Math.ceil(Math.min(bleed, 4000));   // sanity cap
+
+      // No effects → hand back the glyph itself, no extra buffer or copy.
+      if(bleed <= 0) {
+        return { canvas: glyph.canvas, cx: glyph.w / 2, cy: glyph.h / 2 };
+      }
+
+      const lw = Math.ceil(glyph.w + bleed * 2);
+      const lh = Math.ceil(glyph.h + bleed * 2);
+      if(!this._lc) {
+        this._lc   = document.createElement('canvas');
+        this._lctx = this._lc.getContext('2d');
+      }
+      if(this._lc.width !== lw)  this._lc.width  = lw;
+      if(this._lc.height !== lh) this._lc.height = lh;
+      const lctx = this._lctx;
+      lctx.setTransform(1, 0, 0, 1, 0, 0);
+      lctx.globalAlpha = 1;
+      lctx.clearRect(0, 0, lw, lh);
+
+      const gx = bleed, gy = bleed;          // glyph origin inside the layer
+      (shadowsArr || []).forEach(sh => this._castShadowStack(lctx, glyph.canvas, gx, gy, sh, scale));
+      this._castGlow(lctx, glyph.canvas, gx, gy, glow, scale);
+      lctx.drawImage(glyph.canvas, gx, gy);   // sharp text always on top
+
+      return { canvas: this._lc, cx: lw / 2, cy: lh / 2 };
+    }
+
+    // Draw one caption group at time t. Caller sets up ctx; does NOT clear.
+    renderFrame(ctx, spec, group, t, W, H) {
+      if(!group || !group.words || !group.words.length) return;
+
+      const state  = this.anim.calculate(spec, group, t);
+      // Layout ALWAYS uses the base font size, so word positions are identical
+      // whichever word is active. An enlarged active word is a transform on top of
+      // this stable layout — it never re-flows the line.
+      const layout = this.layout.layoutGroup(group, spec, W, H);
+      const fontPx = layout.fontSize;
+      // ONE scale for every effect metric (shadow dist/blur, glow, stroke,
+      // highlight & bar padding, per-word offsets) — the same responsive factor
+      // the layout used, so effects never drift from the type they belong to.
+      const scale  = spec.typeScale(W, H);
+      const containerOpacity = (state.containerOpacity == null ? 1 : state.containerOpacity);
+      if(containerOpacity <= 0) return;
+
+      ctx.save();
+      ctx.globalAlpha = 1;
+
+      // ── AUTO-FIT: scale the whole caption down (around its center) if its
+      // widest line would exceed the max-width box, so long words / huge fonts
+      // never overflow the frame. Mirrors the preview's auto-fit. ──
+      //
+      // The box is min(maxWidth, posX*2, (100-posX)*2) — the SAME safe box
+      // applyPreviewTransform() uses. Using bare maxWidth here meant an
+      // off-centre caption (posX 20 with maxWidth 85) was clamped to 40% of the
+      // frame in the preview but 85% in the export, so the exported text hung
+      // off the edge on a caption that looked fine in the editor.
+      //
+      // totalWidth measures GLYPHS only, but styles 1/7 paint a highlight pill
+      // or word bar that sticks out by its horizontal padding on each side.
+      // Charging that padding to the fit keeps those styles inside the box too
+      // (they measured 87.5% / 88.1% of frame against an 85% box before).
+      // EDGE_INSET keeps an off-centre caption a hair inside the frame instead of
+      // exactly tangent to it: at posX=20 the widest centred box is exactly 40%,
+      // which puts the outermost pixel on x=0. Applied only to the position-derived
+      // terms, so the default (posX 50, maxWidth 85) is untouched.
+      const _pX      = spec.positionX == null ? 50 : spec.positionX;
+      const _safePct = Math.max(20, Math.min(spec.maxWidth || 85,
+                                             _pX * 2 - EDGE_INSET_PCT,
+                                             (100 - _pX) * 2 - EDGE_INSET_PCT));
+      const availW   = W * (Math.min(_safePct, 100) / 100);
+      // layout.totalWidth is the glyph ADVANCE width. Several things paint OUTSIDE
+      // it, and charging them to the fit is what keeps the caption inside the box
+      // rather than merely centred on it:
+      //   • the stroke, which extends strokeWidth beyond the glyph outline
+      //   • a whole-line background bar's horizontal padding
+      //   • a highlight pill / style-7 word bar's horizontal padding
+      //   • animation-driven word scale-up (style 3's enlarged active word,
+      //     style 7's bounce) — read from the live animation state, so this
+      //     tracks whatever the style actually does instead of a guess
+      // All of it is drawn INSIDE the fit transform below, so it scales down with
+      // the text and the arithmetic stays consistent.
+      const _spProps   = (spec.styleProps || {})[spec.animationStyle] || {};
+      const _strokeOut = (spec.strokeEnabled && spec.strokeWidth > 0) ? spec.strokeWidth : 0;
+      const _bgPad     = state.containerBg
+        ? (state.containerBg.padH || 0)
+        : ((spec.bgEnabled && spec.bgOpacity > 0) ? (spec.bgPadH || 0) : 0);
+
+      let _wordOut = 0;          // widest per-word outward paint, spec space
+      let _scaleGrow = 0;        // extra target px from a scaled-up word
+      (state.words || []).forEach((ws, i) => {
+        if(!ws) return;
+        const wb      = ws.wordBar;
+        const wbPad   = wb ? (wb.padH || 0) * Math.max(1, wb.scale || 1) : 0;
+        const hlPad   = ws.bgColor ? (spec.highlightPadH || 0) : 0;
+        // Glow is deliberately NOT charged here. It is a soft halo, so a hair of
+        // it reaching the frame edge is invisible — whereas charging it (a 26px
+        // spread casts a 47px halo) visibly SHRANK the text the moment glow was
+        // switched on, which is a far worse surprise than an imperceptible clip.
+        // Stroke, pills and bars stay charged because those edges are hard.
+        _wordOut = Math.max(_wordOut, wbPad, hlPad);
+        // A word scaled around its own centre widens the line by (s-1)*itsWidth
+        // at most. Per-word, not per-line — charging the whole line would shrink
+        // style 3 by ~35% and change how it looks.
+        const wsScale = ws.scale || 1;
+        const pw = layout.words[i];
+        if(wsScale > 1 && pw) _scaleGrow = Math.max(_scaleGrow, (wsScale - 1) * (pw.width || 0));
+      });
+      if(!(state.words || []).length && spec.highlightEnabled) {
+        _wordOut = Math.max(_wordOut, spec.highlightPadH || 0);
+      }
+      _wordOut = Math.max(_wordOut, _spProps.padH || 0);
+
+      const _padOut = 2 * (_strokeOut + Math.max(_bgPad, _wordOut)) * scale;
+      const fitW = layout.totalWidth + _scaleGrow + _padOut;
+      if(fitW > availW && fitW > 0) {
+        const fit = availW / fitW;
+        ctx.translate(layout.centerX, layout.centerY);
+        ctx.scale(fit, fit);
+        ctx.translate(-layout.centerX, -layout.centerY);
+      }
+
+      // ── Container background box (spec §caption background) ──
+      if(state.containerBg || (spec.bgEnabled && spec.bgOpacity > 0)) {
+        const bg = state.containerBg || {
+          color: spec.bgColor, opacity: spec.bgOpacity / 100,
+          padH: spec.bgPadH, padV: spec.bgPadV, radius: spec.bgRadius
+        };
+        const padH = (bg.padH || 0) * scale, padV = (bg.padV || 0) * scale;
+        const x0 = layout.centerX - layout.totalWidth/2 - padH;
+        const y0 = layout.centerY - layout.totalHeight/2 - padV;
+        ctx.save();
+        ctx.globalAlpha = containerOpacity * (bg.opacity == null ? 1 : bg.opacity);
+        ctx.fillStyle = bg.color || '#000';
+        this._roundRectPath(ctx, x0, y0, layout.totalWidth + padH*2, layout.totalHeight + padV*2, (bg.radius||0)*scale);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // ── Per-word draw ──
+      const words = state.words || [];
+      // Letter-block metrics so highlight bars hug the LETTERS (equal padding above
+      // the cap tops and below the baseline) instead of the em box, whose empty
+      // descender zone made bars look bottom-heavy on words like "would".
+      const lmBase = letterMetrics(spec, fontPx);
+      // Paint order: every inactive word first, then the ACTIVE one last so it sits
+      // ON TOP. Canvas has no z-index — later draws win — so without this the next
+      // word overlapped an enlarged active word. Stable: relative order is kept
+      // within each group, so nothing else about the layout changes.
+      const drawOrder = layout.words.map((_, i) => i)
+        .sort((a, b) => ((words[a] && words[a].highlighted) ? 1 : 0) -
+                        ((words[b] && words[b].highlighted) ? 1 : 0));
+
+      drawOrder.forEach((i) => {
+        const pw = layout.words[i];
+        const ws = words[i] || {};
+        if(!pw || ws.visible === false) return;
+        const wordOpacity = (ws.opacity == null ? 1 : ws.opacity);
+        if(wordOpacity <= 0) return;
+        const wScale = (ws.scale == null ? 1 : ws.scale);
+
+        // This word's own draw size + letter metrics (may differ from the line's
+        // base size when a style enlarges the active word).
+        const wSize = pw.size || fontPx;
+        const lm      = (wSize === fontPx) ? lmBase : letterMetrics(spec, wSize);
+        const ocY     = lm.centerY;
+        const letterH = lm.letterH;
+
+        // BASELINE ALIGNMENT: keep every word sitting on the same baseline, so a
+        // bigger active word grows UPWARD instead of shifting the line. The line's
+        // baseline is where a base-size word's baseline falls.
+        const baselineY = pw.y + lmBase.baseline;
+        const originY   = baselineY - lm.baseline;
+
+        ctx.save();
+        ctx.globalAlpha = containerOpacity * wordOpacity;
+        ctx.translate(pw.x + (ws.x||0)*scale, originY + (ws.y||0)*scale);
+        // Anchor extra scale at the BOTTOM (baseline) so it also grows upward
+        if(wScale !== 1) {
+          if(ws.anchorBottom) {
+            ctx.translate(0, lm.baseline);
+            ctx.scale(wScale, wScale);
+            ctx.translate(0, -lm.baseline);
+          } else {
+            ctx.scale(wScale, wScale);
+          }
+        }
+
+        // Border/Pop-up bar behind the word (Style 7 — s7-word-bar). Uses the
+        // bar's own padding/radius/color from the animation state.
+        if(ws.wordBar) {
+          const padH = (ws.wordBar.padH || 0) * scale;
+          const padV = (ws.wordBar.padV || 0) * scale;
+          const bw = pw.width + padH*2;
+          const bh = letterH + padV*2;   // hug the letters, not the em box
+          const barScale = (ws.wordBar.scale == null ? 1 : ws.wordBar.scale);
+          ctx.save();
+          // The bar animates INDEPENDENTLY of the word (matches the DOM, where
+          // .s7-word-bar is a child with its own keyframes and centre origin).
+          // transform-origin MUST be the bar's own centre. Scaling around the
+          // word origin (0,0) instead moved the bar vertically by
+          // ocY*(barScale-1) every frame of the pop, so the Border Pop Up bar
+          // drifted and appeared to change size/position in the export while the
+          // preview — where CSS transform-origin:center does the right thing —
+          // stayed put.
+          if(barScale !== 1) {
+            ctx.translate(0, ocY);
+            ctx.scale(barScale, barScale);
+            ctx.translate(0, -ocY);
+          }
+          ctx.fillStyle = ws.wordBar.color;
+          // Centre on the LETTERS, not the em box (see _opticalCenterY)
+          this._roundRectPath(ctx, -bw/2, ocY - bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        // Highlight pill behind the word (styles 1/2 highlight)
+        if(ws.bgColor) {
+          const padH = (spec.highlightPadH || 0) * scale;
+          const padV = (spec.highlightPadV || 0) * scale;
+          const bw = pw.width + padH*2;
+          const bh = fontPx + padV*2;    // em-box pill — matches the DOM (background + box-shadow)
+          ctx.fillStyle = ws.bgColor;
+          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (spec.highlightRadius||0)*scale);
+          ctx.fill();
+        }
+
+        // ── Word + its effects, composited as ONE unit ──
+        // Drop shadows (spec.shadows: [{dist,angle,size,spread,opacity,color}])
+        // each expand to the 7-layer stack the DOM preview paints, and glow to a
+        // 3-layer stack — see _castShadowStack / _castGlow. Both are baked into
+        // the word layer, NOT cast onto this transformed context: see
+        // _composeWordLayer for why that distinction is load-bearing.
+        const fillColor = ws.color || spec.color || '#fff';
+        const shadows = Array.isArray(spec.shadows) ? spec.shadows : [];
+        const glow = ws.glow || (spec.glowEnabled
+          ? { color: spec.glowColor, size: spec.glowIntensity, spread: spec.glowSpread }
+          : null);
+        const layer = this._composeWordLayer(pw.text, spec, fillColor, wSize, scale, shadows, glow);
+        ctx.drawImage(layer.canvas, -layer.cx, -layer.cy);
+        ctx.restore();
+      });
+
+      ctx.restore();
+    }
+
+    // Convenience: pick the active group at time t and draw it. Clears the target.
+    renderComposite(ctx, spec, groups, t, W, H, clear) {
+      if(clear !== false) ctx.clearRect(0, 0, W, H);
+      if(!groups || !groups.length) return;
+      let active = null;
+      for(let i = 0; i < groups.length; i++) {
+        const g = groups[i];
+        if(t >= g.start && t < g.end) { active = g; break; }
+      }
+      if(active) this.renderFrame(ctx, spec, active, t, W, H);
+    }
+  }
+
+  // ═══════════════════════════════════════════
   // EXPORT PUBLIC API
   // ═══════════════════════════════════════════
-  
+
   const CaptionEngine = {
     CaptionStyleSpec,
     AnimationEngine,
     TextLayoutEngine,
     VideoMetadata,
     StyleCollector,
-    version: '1.0.0'
+    CaptionRenderer,
+    // Shared typography primitives — the DOM preview imports these so it and the
+    // export renderer resolve fonts identically (single source of truth).
+    FONT_STYLE_MAP,
+    fontShorthand,
+    applyLetterSpacing,
+    opticalCenterOffset,
+    // The responsive canvas typography scale. The DOM preview MUST call this
+    // rather than reimplement min(w/1080, h/1920), or preview and export drift
+    // the moment one of them is tweaked.
+    canvasTypeScale,
+    CANVAS_REF_W,
+    CANVAS_REF_H,
+    EDGE_INSET_PCT,
+    version: '1.1.0'
   };
   
   // Attach to global
@@ -822,7 +1576,8 @@
   global.TextLayoutEngine = TextLayoutEngine;
   global.VideoMetadata = VideoMetadata;
   global.StyleCollector = StyleCollector;
-  
+  global.CaptionRenderer = CaptionRenderer;
+
   console.log('[CaptionEngine] v1.0.0 loaded ✓');
   
 })(typeof window !== 'undefined' ? window : this);
