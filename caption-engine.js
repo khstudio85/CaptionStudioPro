@@ -275,6 +275,130 @@
   }
 
   // ═══════════════════════════════════════════
+  // SHARED EFFECT LAYER MODEL  (single source of truth)
+  // ═══════════════════════════════════════════
+  // Drop shadow and glow are expanded into layer DESCRIPTORS here, exactly once:
+  //
+  //     { dx, dy, blur, color }        px in the caller's space, colour is rgba()
+  //
+  // ORDER CONVENTION: descriptor lists are FRONT TO BACK — index 0 is the layer
+  // nearest the glyph. That is CSS text-shadow's own convention (an earlier entry
+  // paints on top of later ones), and it is the order the original design intended:
+  // the tight dark CONTACT shadow sits in front of the wide faint halo, not behind
+  // it. So layersToCSS() emits the list as-is, and the canvas backend — where a
+  // later draw wins — walks it in REVERSE. Getting this backwards is what made the
+  // exported shadow stack read inverted against the preview: the canvas painted
+  // contact first, letting the 0.18-alpha far halo wash over it.
+  //
+  // The canvas backend casts each descriptor with _castShadow(); the DOM preview
+  // formats the SAME descriptors into a CSS text-shadow list via layersToCSS().
+  // Neither side owns the maths.
+  //
+  // This replaces two hand-mirrored implementations — buildShadowCSS() in
+  // index.html and _castShadowStack() here — which had to be kept in step by
+  // hand. They already disagreed: the canvas side treated `opacity` as a 0-1
+  // alpha when the UI slider emits 0-100, so every exported shadow was fully
+  // opaque, and it painted ONE flat layer against the DOM's seven.
+  //
+  // `scale` is whatever space the caller wants the numbers in: the exporter
+  // passes spec.typeScale(W,H) for target pixels, the preview passes its
+  // _fontScale for on-screen pixels. Same descriptors, different space.
+  function _rgbaStr(hex, alpha) {
+    if(typeof hex !== 'string') return hex;
+    let c = hex.replace('#', '');
+    if(c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
+    const r = parseInt(c.substring(0,2),16) || 0;
+    const g = parseInt(c.substring(2,4),16) || 0;
+    const b = parseInt(c.substring(4,6),16) || 0;
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + (alpha == null ? 1 : alpha) + ')';
+  }
+
+  // Normalise the opacity slider. It is authored 0-100; a value <= 1 is taken as
+  // an already-normalised alpha so older projects do not render invisible.
+  function _normOpacity(v) {
+    const raw = (v == null) ? 100 : +v;
+    return raw > 1 ? raw / 100 : raw;
+  }
+
+  // ONE drop-shadow entry -> its 7-layer stack, back to front.
+  // contact / key / mid / soft penumbra / far halo / ambient spread x2 / rim.
+  function shadowLayers(sh, scale) {
+    if(!sh) return [];
+    // Opacity 0 means OFF. Without this the contact layer's `op + 0.15` boost
+    // kept painting a 0.15-alpha shadow at opacity 0, so the slider could never
+    // actually turn the shadow off. (Inherited from the original buildShadowCSS,
+    // so the preview did it too — consistent, but still wrong.)
+    if(_normOpacity(sh.opacity) <= 0) return [];
+    const k    = (scale == null ? 1 : scale);
+    const rad  = ((sh.angle || 0) * Math.PI) / 180;
+    const x    = Math.cos(rad) * (sh.dist || 0) * k;
+    const y    = Math.sin(rad) * (sh.dist || 0) * k;
+    const blur = (sh.size || 0) * k;
+    const sp   = (sh.spread || 0) * k;
+    const op   = _normOpacity(sh.opacity);
+    const col  = sh.color || '#000000';
+    const out  = [];
+    const push = (dx, dy, b, a) => {
+      if(a <= 0.004) return;
+      out.push({ dx: dx, dy: dy, blur: Math.max(0, b), color: _rgbaStr(col, +a.toFixed(4)) });
+    };
+    push(x * 0.15, y * 0.15, Math.max(1, Math.round(blur * 0.15)), Math.min(0.95, op + 0.15)); // contact
+    push(x * 0.5,  y * 0.5,  Math.max(2, Math.round(blur * 0.5)),  op * 0.85);                 // key
+    push(x,        y,        blur,                                 op);                        // mid
+    push(x * 1.3,  y * 1.3,  Math.round(blur * 2.0 + 6),           op * 0.4);                  // penumbra
+    push(x * 1.6,  y * 1.6,  Math.round(blur * 3.5 + 12),          op * 0.18);                 // far halo
+    if(sp > 0) {
+      push(0, 0, Math.round(blur * 0.8 + sp * 2), op * 0.5);
+      push(0, 0, Math.round(blur * 1.8 + sp * 4), op * 0.25);
+    }
+    if(blur > 4) push(-x * 0.08, -y * 0.08, Math.max(1, Math.round(blur * 0.3)), op * 0.15);    // rim
+    return out;
+  }
+
+  // Glow -> its 3-layer stack: intensity core, spread, wide halo.
+  // 0x88 = 0.533 and 0x44 = 0.267 are the alphas the CSS preset uses.
+  // A per-word animation glow carries no spread and is a single layer.
+  function glowLayers(glow, scale) {
+    if(!glow) return [];
+    const k  = (scale == null ? 1 : scale);
+    const gi = (glow.size || 0) * k;
+    const gs = (glow.spread != null ? glow.spread : 0) * k;
+    const col = glow.color || '#ffffff';
+    const out = [];
+    if(gi > 0) out.push({ dx: 0, dy: 0, blur: gi, color: col });
+    if(gs > 0) {
+      out.push({ dx: 0, dy: 0, blur: gs,       color: _rgbaStr(col, 0.533) });
+      out.push({ dx: 0, dy: 0, blur: gs * 1.8, color: _rgbaStr(col, 0.267) });
+    }
+    return out;
+  }
+
+  // All effect layers for a word, in the order they must PAINT (back to front):
+  // drop shadow furthest back, then glow, then the caller draws sharp text.
+  // `wordState` is the per-word animation state, so an animation-supplied glow
+  // (styles 5/7) wins over the UI glow panel exactly as the renderer does.
+  function effectLayers(spec, wordState, scale) {
+    const ws = wordState || {};
+    const shadows = Array.isArray(spec.shadows) ? spec.shadows : [];
+    const sh = [];
+    shadows.forEach(e => { shadowLayers(e, scale).forEach(l => sh.push(l)); });
+    const glow = ws.glow || (spec.glowEnabled
+      ? { color: spec.glowColor, size: spec.glowIntensity, spread: spec.glowSpread }
+      : null);
+    return { shadow: sh, glow: glowLayers(glow, scale) };
+  }
+
+  // Format descriptors as a CSS text-shadow / box-shadow value list.
+  function layersToCSS(layers) {
+    if(!layers || !layers.length) return '';
+    // As-is: descriptors are already in CSS's front-to-back order.
+    return layers.map(l =>
+      (+l.dx).toFixed(1) + 'px ' + (+l.dy).toFixed(1) + 'px ' +
+      Math.round(l.blur) + 'px ' + l.color
+    ).join(', ');
+  }
+
+  // ═══════════════════════════════════════════
   // 2. ANIMATION ENGINE
   // Frame-accurate animation calculations
   // ═══════════════════════════════════════════
@@ -1060,16 +1184,6 @@
     fontString(spec, sizePx) { return fontShorthand(spec, sizePx); }
 
     // hex (#rgb/#rrggbb) + alpha → rgba() string
-    _rgba(hex, alpha) {
-      if(typeof hex !== 'string') return hex;
-      let c = hex.replace('#', '');
-      if(c.length === 3) c = c[0]+c[0]+c[1]+c[1]+c[2]+c[2];
-      const r = parseInt(c.substring(0,2),16) || 0;
-      const g = parseInt(c.substring(2,4),16) || 0;
-      const b = parseInt(c.substring(4,6),16) || 0;
-      return 'rgba(' + r + ',' + g + ',' + b + ',' + (alpha == null ? 1 : alpha) + ')';
-    }
-
     // Linear gradient across a text box, matching the CSS gradientAngle used in
     // the preview (0deg = to top, clockwise). Mirrors makeTextGradient in index.html.
     _makeGradient(ctx, spec, x0, y0, x1, y1) {
@@ -1160,74 +1274,19 @@
       ctx.restore();
     }
 
-    // ── SHADOW STACK (export ↔ preview parity) ────────────────────────────
-    // The DOM preview does NOT paint one shadow per shadow entry: buildShadowCSS()
-    // in index.html expands every entry into a 7-layer text-shadow stack (contact /
-    // key / mid / soft penumbra / far halo / ambient spread / highlight rim). Casting
-    // a single flat layer here is why exported shadows looked thin and lifeless next
-    // to the preview. This mirrors that expansion layer-for-layer, in the same order,
-    // with the same multipliers — CSS blur radius and canvas shadowBlur are both
-    // 2x-sigma, so the px values carry over 1:1.
-    //
-    // `sh.opacity` is a 0-100 slider value (same as the UI), NOT a 0-1 alpha —
-    // passing it straight to rgba() clamped every shadow to fully opaque and made
-    // the opacity slider a no-op in the exported file.
-    _castShadowStack(ctx, glyphCanvas, gx, gy, sh, scale) {
-      if(!sh) return;
-      const rad  = ((sh.angle || 0) * Math.PI) / 180;
-      const x    = Math.cos(rad) * (sh.dist || 0) * scale;
-      const y    = Math.sin(rad) * (sh.dist || 0) * scale;
-      const blur = (sh.size || 0) * scale;
-      // 0-100 → 0-1. Values <= 1 are treated as already-normalised alpha so a
-      // project saved with a 0-1 opacity does not become invisible.
-      const rawOp = (sh.opacity == null) ? 100 : sh.opacity;
-      const op    = rawOp > 1 ? rawOp / 100 : rawOp;
-      const sp    = (sh.spread || 0) * scale;
-      const col   = sh.color || '#000000';
-      const cast  = (ox, oy, b, a) => {
-        if(a <= 0.004) return;
-        this._castShadow(ctx, glyphCanvas, gx, gy, ox, oy, Math.max(0, b), this._rgba(col, +a.toFixed(4)));
-      };
-
-      // 1 · contact shadow (ambient occlusion — very tight, darker)
-      cast(x * 0.15, y * 0.15, Math.max(1, Math.round(blur * 0.15)), Math.min(0.95, op + 0.15));
-      // 2 · key shadow (sharp, light penumbra)
-      cast(x * 0.5,  y * 0.5,  Math.max(2, Math.round(blur * 0.5)),  op * 0.85);
-      // 3 · mid shadow (the exact distance + blur the user set)
-      cast(x,        y,        blur,                                 op);
-      // 4 · soft penumbra
-      cast(x * 1.3,  y * 1.3,  Math.round(blur * 2.0 + 6),           op * 0.4);
-      // 5 · far halo (wide diffuse)
-      cast(x * 1.6,  y * 1.6,  Math.round(blur * 3.5 + 12),          op * 0.18);
-      // 6 · ambient spread (centred, only when spread > 0)
-      if(sp > 0) {
-        cast(0, 0, Math.round(blur * 0.8 + sp * 2), op * 0.5);
-        cast(0, 0, Math.round(blur * 1.8 + sp * 4), op * 0.25);
-      }
-      // 7 · highlight rim (inverse direction, only on softer shadows)
-      if(blur > 4) cast(-x * 0.08, -y * 0.08, Math.max(1, Math.round(blur * 0.3)), op * 0.15);
-    }
-
-    // ── GLOW (export ↔ preview parity) ────────────────────────────────────
-    // onGlowChange() in index.html builds a THREE layer glow:
-    //   0 0 {intensity}px {c}, 0 0 {spread}px {c}88, 0 0 {spread*1.8}px {c}44
-    // The export used to cast only the tight `intensity` layer (twice, to fake
-    // strength) and ignored glowSpread entirely — so the wide halo that actually
-    // reads as "glow" never made it into the video. 0x88 = 0.533, 0x44 = 0.267.
-    _castGlow(ctx, glyphCanvas, gx, gy, glow, scale) {
-      if(!glow) return;
-      const intensity = (glow.size || 0) * scale;
-      // Per-word ANIMATION glow (ws.glow) carries no spread, and the preview paints
-      // it as a single `0 0 {glowSize}px` layer (see the chip.style.textShadow line
-      // in index.html) — so spread 0 here is exact parity, not a missing value. Only
-      // the UI glow panel supplies glowSpread and gets the wide halo.
-      const spread = (glow.spread != null ? glow.spread : 0) * scale;
-      const col = glow.color || '#ffffff';
-      if(intensity <= 0 && spread <= 0) return;
-      if(intensity > 0) this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, intensity, col);
-      if(spread > 0) {
-        this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, spread, this._rgba(col, 0.533));
-        this._castShadow(ctx, glyphCanvas, gx, gy, 0, 0, spread * 1.8, this._rgba(col, 0.267));
+    // ── EFFECT PAINTING (descriptors -> canvas) ───────────────────────────
+    // The maths lives in shadowLayers()/glowLayers()/effectLayers() above and is
+    // shared with the DOM preview. These two only turn descriptors into draws,
+    // so there is nothing here that can drift from the preview.
+    _paintLayers(ctx, glyphCanvas, gx, gy, layers) {
+      if(!layers) return;
+      // REVERSE: descriptors are front-to-back (see the ORDER CONVENTION note on
+      // the shared model), and on canvas a later draw paints on top — so walk from
+      // the furthest layer forwards.
+      for(let i = layers.length - 1; i >= 0; i--) {
+        const l = layers[i];
+        if(!l || l.blur < 0) continue;
+        this._castShadow(ctx, glyphCanvas, gx, gy, l.dx, l.dy, l.blur, l.color);
       }
     }
 
@@ -1258,27 +1317,20 @@
     //
     // The layer is padded by the widest bleed any effect can cast, otherwise the
     // glow would clip to a hard-edged box at the layer boundary.
-    _composeWordLayer(text, spec, fillColor, wSize, scale, shadowsArr, glow) {
+    _composeWordLayer(text, spec, fillColor, wSize, scale, layers) {
       const glyph = this._renderWordGlyph(text, spec, fillColor, wSize, scale);
 
       // How far outside the glyph box can anything paint? shadowBlur B is a
       // Gaussian of sigma B/2, so 2*B covers >4 sigma — visually all of it.
-      // The multipliers mirror the widest layers _castShadowStack casts
-      // (far halo blur*3.5+12, ambient spread blur*1.8+sp*4, offset dist*1.6).
+      // Derived from the descriptors themselves, so it tracks the shared model.
+      // Bleed straight off the descriptors, so it can never under-estimate a
+      // layer the shared model added. shadowBlur B is a Gaussian of sigma B/2,
+      // so |offset| + 2B covers >4 sigma of every layer.
       let bleed = 0;
-      (shadowsArr || []).forEach(sh => {
-        if(!sh) return;
-        const dist = Math.abs(sh.dist  || 0) * scale;
-        const blur = Math.abs(sh.size  || 0) * scale;
-        const sp   = Math.abs(sh.spread || 0) * scale;
-        bleed = Math.max(bleed,
-                         dist * 1.6 + (blur * 3.5 + 12) * 2,
-                         (blur * 1.8 + sp * 4) * 2);
-      });
-      if(glow) {
-        const gi = Math.abs(glow.size || 0) * scale;
-        const gs = Math.abs(glow.spread != null ? glow.spread : 0) * scale;
-        bleed = Math.max(bleed, gi * 2, gs * 1.8 * 2);
+      const _allLayers = (layers.shadow || []).concat(layers.glow || []);
+      for(let i = 0; i < _allLayers.length; i++) {
+        const l = _allLayers[i];
+        bleed = Math.max(bleed, Math.hypot(l.dx, l.dy) + l.blur * 2);
       }
       bleed = Math.ceil(Math.min(bleed, 4000));   // sanity cap
 
@@ -1301,225 +1353,129 @@
       lctx.clearRect(0, 0, lw, lh);
 
       const gx = bleed, gy = bleed;          // glyph origin inside the layer
-      (shadowsArr || []).forEach(sh => this._castShadowStack(lctx, glyph.canvas, gx, gy, sh, scale));
-      this._castGlow(lctx, glyph.canvas, gx, gy, glow, scale);
+      // Groups back to front: DROP SHADOW is furthest, then GLOW, then the sharp
+      // glyph. Within each group _paintLayers handles front-to-back ordering.
+      // Matches the DOM, where the caption's text-shadow list is [glow, shadow]
+      // and CSS puts the earlier group on top.
+      this._paintLayers(lctx, glyph.canvas, gx, gy, layers.shadow);
+      this._paintLayers(lctx, glyph.canvas, gx, gy, layers.glow);
       lctx.drawImage(glyph.canvas, gx, gy);   // sharp text always on top
 
       return { canvas: this._lc, cx: lw / 2, cy: lh / 2 };
     }
 
     // Draw one caption group at time t. Caller sets up ctx; does NOT clear.
+    // Draw one caption group at time t. Caller sets up ctx; does NOT clear.
+    // Thin wrapper: compute the shared frame, then hand it to the canvas backend.
     renderFrame(ctx, spec, group, t, W, H) {
-      if(!group || !group.words || !group.words.length) return;
+      const frame = computeFrame(spec, group, t, W, H,
+                                 { anim: this.anim, layout: this.layout });
+      this.drawFrame(ctx, frame, spec);
+    }
 
-      const state  = this.anim.calculate(spec, group, t);
-      // Layout ALWAYS uses the base font size, so word positions are identical
-      // whichever word is active. An enlarged active word is a transform on top of
-      // this stable layout — it never re-flows the line.
-      const layout = this.layout.layoutGroup(group, spec, W, H);
-      const fontPx = layout.fontSize;
-      // ONE scale for every effect metric (shadow dist/blur, glow, stroke,
-      // highlight & bar padding, per-word offsets) — the same responsive factor
-      // the layout used, so effects never drift from the type they belong to.
-      const scale  = spec.typeScale(W, H);
-      const containerOpacity = (state.containerOpacity == null ? 1 : state.containerOpacity);
+    // ═══════════════════════════════════════════════════════════════════════
+    // CANVAS BACKEND
+    // ═══════════════════════════════════════════════════════════════════════
+    // Consumes a computeFrame() result and draws it. It computes NO geometry,
+    // timing, metric or effect value of its own — every number comes from
+    // `frame`. The DOM preview backend consumes the very same object, which is
+    // what makes "what I see is what I get" structural rather than maintained.
+    //
+    // `spec` is still passed because drawing needs the raw glyph paint settings
+    // (font shorthand, gradient stops, stroke colour). Those are style INPUTS,
+    // not computed values.
+    drawFrame(ctx, frame, spec) {
+      if(!frame) return;
+      const containerOpacity = frame.containerOpacity;
       if(containerOpacity <= 0) return;
+      const scale = frame.scale;
 
       ctx.save();
       ctx.globalAlpha = 1;
 
-      // ── AUTO-FIT: scale the whole caption down (around its center) if its
-      // widest line would exceed the max-width box, so long words / huge fonts
-      // never overflow the frame. Mirrors the preview's auto-fit. ──
-      //
-      // The box is min(maxWidth, posX*2, (100-posX)*2) — the SAME safe box
-      // applyPreviewTransform() uses. Using bare maxWidth here meant an
-      // off-centre caption (posX 20 with maxWidth 85) was clamped to 40% of the
-      // frame in the preview but 85% in the export, so the exported text hung
-      // off the edge on a caption that looked fine in the editor.
-      //
-      // totalWidth measures GLYPHS only, but styles 1/7 paint a highlight pill
-      // or word bar that sticks out by its horizontal padding on each side.
-      // Charging that padding to the fit keeps those styles inside the box too
-      // (they measured 87.5% / 88.1% of frame against an 85% box before).
-      // EDGE_INSET keeps an off-centre caption a hair inside the frame instead of
-      // exactly tangent to it: at posX=20 the widest centred box is exactly 40%,
-      // which puts the outermost pixel on x=0. Applied only to the position-derived
-      // terms, so the default (posX 50, maxWidth 85) is untouched.
-      const _pX      = spec.positionX == null ? 50 : spec.positionX;
-      const _safePct = Math.max(20, Math.min(spec.maxWidth || 85,
-                                             _pX * 2 - EDGE_INSET_PCT,
-                                             (100 - _pX) * 2 - EDGE_INSET_PCT));
-      const availW   = W * (Math.min(_safePct, 100) / 100);
-      // layout.totalWidth is the glyph ADVANCE width. Several things paint OUTSIDE
-      // it, and charging them to the fit is what keeps the caption inside the box
-      // rather than merely centred on it:
-      //   • the stroke, which extends strokeWidth beyond the glyph outline
-      //   • a whole-line background bar's horizontal padding
-      //   • a highlight pill / style-7 word bar's horizontal padding
-      //   • animation-driven word scale-up (style 3's enlarged active word,
-      //     style 7's bounce) — read from the live animation state, so this
-      //     tracks whatever the style actually does instead of a guess
-      // All of it is drawn INSIDE the fit transform below, so it scales down with
-      // the text and the arithmetic stays consistent.
-      const _spProps   = (spec.styleProps || {})[spec.animationStyle] || {};
-      const _strokeOut = (spec.strokeEnabled && spec.strokeWidth > 0) ? spec.strokeWidth : 0;
-      const _bgPad     = state.containerBg
-        ? (state.containerBg.padH || 0)
-        : ((spec.bgEnabled && spec.bgOpacity > 0) ? (spec.bgPadH || 0) : 0);
-
-      let _wordOut = 0;          // widest per-word outward paint, spec space
-      let _scaleGrow = 0;        // extra target px from a scaled-up word
-      (state.words || []).forEach((ws, i) => {
-        if(!ws) return;
-        const wb      = ws.wordBar;
-        const wbPad   = wb ? (wb.padH || 0) * Math.max(1, wb.scale || 1) : 0;
-        const hlPad   = ws.bgColor ? (spec.highlightPadH || 0) : 0;
-        // Glow is deliberately NOT charged here. It is a soft halo, so a hair of
-        // it reaching the frame edge is invisible — whereas charging it (a 26px
-        // spread casts a 47px halo) visibly SHRANK the text the moment glow was
-        // switched on, which is a far worse surprise than an imperceptible clip.
-        // Stroke, pills and bars stay charged because those edges are hard.
-        _wordOut = Math.max(_wordOut, wbPad, hlPad);
-        // A word scaled around its own centre widens the line by (s-1)*itsWidth
-        // at most. Per-word, not per-line — charging the whole line would shrink
-        // style 3 by ~35% and change how it looks.
-        const wsScale = ws.scale || 1;
-        const pw = layout.words[i];
-        if(wsScale > 1 && pw) _scaleGrow = Math.max(_scaleGrow, (wsScale - 1) * (pw.width || 0));
-      });
-      if(!(state.words || []).length && spec.highlightEnabled) {
-        _wordOut = Math.max(_wordOut, spec.highlightPadH || 0);
-      }
-      _wordOut = Math.max(_wordOut, _spProps.padH || 0);
-
-      const _padOut = 2 * (_strokeOut + Math.max(_bgPad, _wordOut)) * scale;
-      const fitW = layout.totalWidth + _scaleGrow + _padOut;
-      if(fitW > availW && fitW > 0) {
-        const fit = availW / fitW;
-        ctx.translate(layout.centerX, layout.centerY);
-        ctx.scale(fit, fit);
-        ctx.translate(-layout.centerX, -layout.centerY);
+      // ── AUTO-FIT (computed in computeFrame; applied here) ──
+      if(frame.fit < 1) {
+        ctx.translate(frame.centerX, frame.centerY);
+        ctx.scale(frame.fit, frame.fit);
+        ctx.translate(-frame.centerX, -frame.centerY);
       }
 
-      // ── Container background box (spec §caption background) ──
-      if(state.containerBg || (spec.bgEnabled && spec.bgOpacity > 0)) {
-        const bg = state.containerBg || {
-          color: spec.bgColor, opacity: spec.bgOpacity / 100,
-          padH: spec.bgPadH, padV: spec.bgPadV, radius: spec.bgRadius
-        };
+      // ── Container background box ──
+      const bg = frame.containerBg;
+      if(bg) {
         const padH = (bg.padH || 0) * scale, padV = (bg.padV || 0) * scale;
-        const x0 = layout.centerX - layout.totalWidth/2 - padH;
-        const y0 = layout.centerY - layout.totalHeight/2 - padV;
+        const x0 = frame.centerX - frame.totalWidth/2 - padH;
+        const y0 = frame.centerY - frame.totalHeight/2 - padV;
         ctx.save();
         ctx.globalAlpha = containerOpacity * (bg.opacity == null ? 1 : bg.opacity);
         ctx.fillStyle = bg.color || '#000';
-        this._roundRectPath(ctx, x0, y0, layout.totalWidth + padH*2, layout.totalHeight + padV*2, (bg.radius||0)*scale);
+        this._roundRectPath(ctx, x0, y0,
+                            frame.totalWidth + padH*2, frame.totalHeight + padV*2,
+                            (bg.radius || 0) * scale);
         ctx.fill();
         ctx.restore();
       }
 
-      // ── Per-word draw ──
-      const words = state.words || [];
-      // Letter-block metrics so highlight bars hug the LETTERS (equal padding above
-      // the cap tops and below the baseline) instead of the em box, whose empty
-      // descender zone made bars look bottom-heavy on words like "would".
-      const lmBase = letterMetrics(spec, fontPx);
-      // Paint order: every inactive word first, then the ACTIVE one last so it sits
-      // ON TOP. Canvas has no z-index — later draws win — so without this the next
-      // word overlapped an enlarged active word. Stable: relative order is kept
-      // within each group, so nothing else about the layout changes.
-      const drawOrder = layout.words.map((_, i) => i)
-        .sort((a, b) => ((words[a] && words[a].highlighted) ? 1 : 0) -
-                        ((words[b] && words[b].highlighted) ? 1 : 0));
-
-      drawOrder.forEach((i) => {
-        const pw = layout.words[i];
-        const ws = words[i] || {};
-        if(!pw || ws.visible === false) return;
-        const wordOpacity = (ws.opacity == null ? 1 : ws.opacity);
-        if(wordOpacity <= 0) return;
-        const wScale = (ws.scale == null ? 1 : ws.scale);
-
-        // This word's own draw size + letter metrics (may differ from the line's
-        // base size when a style enlarges the active word).
-        const wSize = pw.size || fontPx;
-        const lm      = (wSize === fontPx) ? lmBase : letterMetrics(spec, wSize);
-        const ocY     = lm.centerY;
-        const letterH = lm.letterH;
-
-        // BASELINE ALIGNMENT: keep every word sitting on the same baseline, so a
-        // bigger active word grows UPWARD instead of shifting the line. The line's
-        // baseline is where a base-size word's baseline falls.
-        const baselineY = pw.y + lmBase.baseline;
-        const originY   = baselineY - lm.baseline;
+      // ── Per-word draw, in the shared paint order ──
+      frame.drawOrder.forEach((i) => {
+        const w = frame.words[i];
+        if(!w || !w.visible || w.opacity <= 0) return;
 
         ctx.save();
-        ctx.globalAlpha = containerOpacity * wordOpacity;
-        ctx.translate(pw.x + (ws.x||0)*scale, originY + (ws.y||0)*scale);
-        // Anchor extra scale at the BOTTOM (baseline) so it also grows upward
-        if(wScale !== 1) {
-          if(ws.anchorBottom) {
-            ctx.translate(0, lm.baseline);
-            ctx.scale(wScale, wScale);
-            ctx.translate(0, -lm.baseline);
+        ctx.globalAlpha = containerOpacity * w.opacity;
+        ctx.translate(w.x, w.y);
+        if(w.rotation) ctx.rotate(w.rotation * Math.PI / 180);
+        // Anchor extra scale at the BOTTOM (baseline) so a bigger word grows
+        // UPWARD instead of shifting the line.
+        if(w.scale !== 1) {
+          if(w.anchorBottom) {
+            ctx.translate(0, w.baseline);
+            ctx.scale(w.scale, w.scale);
+            ctx.translate(0, -w.baseline);
           } else {
-            ctx.scale(wScale, wScale);
+            ctx.scale(w.scale, w.scale);
           }
         }
 
-        // Border/Pop-up bar behind the word (Style 7 — s7-word-bar). Uses the
-        // bar's own padding/radius/color from the animation state.
-        if(ws.wordBar) {
-          const padH = (ws.wordBar.padH || 0) * scale;
-          const padV = (ws.wordBar.padV || 0) * scale;
-          const bw = pw.width + padH*2;
-          const bh = letterH + padV*2;   // hug the letters, not the em box
-          const barScale = (ws.wordBar.scale == null ? 1 : ws.wordBar.scale);
+        // Border/Pop-up bar behind the word (style 7).
+        if(w.wordBar) {
+          const padH = (w.wordBar.padH || 0) * scale;
+          const padV = (w.wordBar.padV || 0) * scale;
+          const bw = w.width + padH*2;
+          const bh = w.letterH + padV*2;   // hug the letters, not the em box
+          const barScale = (w.wordBar.scale == null ? 1 : w.wordBar.scale);
           ctx.save();
-          // The bar animates INDEPENDENTLY of the word (matches the DOM, where
-          // .s7-word-bar is a child with its own keyframes and centre origin).
-          // transform-origin MUST be the bar's own centre. Scaling around the
-          // word origin (0,0) instead moved the bar vertically by
-          // ocY*(barScale-1) every frame of the pop, so the Border Pop Up bar
-          // drifted and appeared to change size/position in the export while the
-          // preview — where CSS transform-origin:center does the right thing —
-          // stayed put.
+          // transform-origin is the bar's OWN centre, matching the DOM's
+          // .s7-word-bar { transform-origin: center center }. Scaling about the
+          // word origin instead moved the bar by opticalY*(barScale-1) each frame.
           if(barScale !== 1) {
-            ctx.translate(0, ocY);
+            ctx.translate(0, w.opticalY);
             ctx.scale(barScale, barScale);
-            ctx.translate(0, -ocY);
+            ctx.translate(0, -w.opticalY);
           }
-          ctx.fillStyle = ws.wordBar.color;
-          // Centre on the LETTERS, not the em box (see _opticalCenterY)
-          this._roundRectPath(ctx, -bw/2, ocY - bh/2, bw, bh, (ws.wordBar.radius||0)*scale);
+          ctx.fillStyle = w.wordBar.color;
+          this._roundRectPath(ctx, -bw/2, w.opticalY - bh/2, bw, bh,
+                              (w.wordBar.radius || 0) * scale);
           ctx.fill();
           ctx.restore();
         }
 
-        // Highlight pill behind the word (styles 1/2 highlight)
-        if(ws.bgColor) {
+        // Highlight pill behind the word (styles 1/2).
+        if(w.bgColor) {
           const padH = (spec.highlightPadH || 0) * scale;
           const padV = (spec.highlightPadV || 0) * scale;
-          const bw = pw.width + padH*2;
-          const bh = fontPx + padV*2;    // em-box pill — matches the DOM (background + box-shadow)
-          ctx.fillStyle = ws.bgColor;
-          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh, (spec.highlightRadius||0)*scale);
+          const bw = w.width + padH*2;
+          const bh = frame.fontPx + padV*2;   // em-box pill — matches the DOM
+          ctx.fillStyle = w.bgColor;
+          this._roundRectPath(ctx, -bw/2, -bh/2, bw, bh,
+                              (spec.highlightRadius || 0) * scale);
           ctx.fill();
         }
 
-        // ── Word + its effects, composited as ONE unit ──
-        // Drop shadows (spec.shadows: [{dist,angle,size,spread,opacity,color}])
-        // each expand to the 7-layer stack the DOM preview paints, and glow to a
-        // 3-layer stack — see _castShadowStack / _castGlow. Both are baked into
-        // the word layer, NOT cast onto this transformed context: see
-        // _composeWordLayer for why that distinction is load-bearing.
-        const fillColor = ws.color || spec.color || '#fff';
-        const shadows = Array.isArray(spec.shadows) ? spec.shadows : [];
-        const glow = ws.glow || (spec.glowEnabled
-          ? { color: spec.glowColor, size: spec.glowIntensity, spread: spec.glowSpread }
-          : null);
-        const layer = this._composeWordLayer(pw.text, spec, fillColor, wSize, scale, shadows, glow);
+        // Word + its effects as ONE composited unit. Effects are baked into the
+        // layer, never cast onto this transformed context — see _composeWordLayer.
+        const layer = this._composeWordLayer(w.text, spec, w.color, w.fontPx,
+                                             scale, w.effects);
         ctx.drawImage(layer.canvas, -layer.cx, -layer.cy);
         ctx.restore();
       });
@@ -1527,17 +1483,387 @@
       ctx.restore();
     }
 
-    // Convenience: pick the active group at time t and draw it. Clears the target.
+    // Clear the target and draw whatever is active at time t.
+    // computeFrame() owns "which group is active" (and returns null in a gap), so
+    // that decision is not duplicated here.
     renderComposite(ctx, spec, groups, t, W, H, clear) {
       if(clear !== false) ctx.clearRect(0, 0, W, H);
-      if(!groups || !groups.length) return;
-      let active = null;
+      const frame = this.computeFrame(spec, groups, t, W, H);
+      this.drawFrame(ctx, frame, spec);
+      return frame;
+    }
+
+    // Compute the shared frame with THIS renderer's engines (so font metrics are
+    // measured against the same reusable canvas context). Exposed so a caller can
+    // get the frame without drawing — the DOM preview backend and the debug
+    // comparison both use this.
+    computeFrame(spec, groups, t, W, H) {
+      return computeFrame(spec, groups, t, W, H,
+                          { anim: this.anim, layout: this.layout });
+    }
+  }
+
+  // ═══════════════════════════════════════════
+  // 7. COMPUTE FRAME  —  THE SINGLE SOURCE OF TRUTH
+  // ═══════════════════════════════════════════
+  // Everything that decides how a caption LOOKS at time t is computed here, once,
+  // and handed to whichever backend is drawing:
+  //
+  //     spec + groups + t + (W,H)
+  //              |
+  //         computeFrame()          <-- animation, layout, metrics, effects, fit
+  //              |
+  //      +-------+-------+
+  //      |               |
+  //   DOM preview     canvas export
+  //   (applies as     (draws to
+  //    CSS)            canvas)
+  //
+  // Neither backend may recompute any of these values. If a style needs to change,
+  // it changes in AnimationEngine / TextLayoutEngine / the shared effect model and
+  // both backends follow automatically.
+  //
+  // Returns null when no caption is active at t — the callers must then render
+  // nothing, which is what makes gaps between caption layers genuinely empty in
+  // both the preview and the exported file.
+  function computeFrame(spec, groups, t, W, H, deps) {
+    const anim   = (deps && deps.anim)   || new AnimationEngine();
+    const layoutEngine = (deps && deps.layout) || new TextLayoutEngine();
+
+    // `groups` may be the whole array (the active one is picked by time) or a
+    // single group object (used as-is). The array form is what makes gaps between
+    // caption layers genuinely empty in both backends.
+    let active = null, activeIndex = -1;
+    if(Array.isArray(groups)) {
       for(let i = 0; i < groups.length; i++) {
         const g = groups[i];
-        if(t >= g.start && t < g.end) { active = g; break; }
+        if(t >= g.start && t < g.end) { active = g; activeIndex = i; break; }
       }
-      if(active) this.renderFrame(ctx, spec, active, t, W, H);
+    } else if(groups) {
+      active = groups; activeIndex = 0;
     }
+    if(!active || !active.words || !active.words.length) return null;
+
+    const state  = anim.calculate(spec, active, t);
+    const layout = layoutEngine.layoutGroup(active, spec, W, H);
+    const scale  = spec.typeScale(W, H);
+    const fontPx = layout.fontSize;
+
+    // ── AUTO-FIT (shared) ────────────────────────────────────────────────
+    // The containment box and the overhang charged against it must be identical
+    // in both backends or an off-centre or heavily-stroked caption fits in one
+    // and clips in the other.
+    const spProps   = (spec.styleProps || {})[spec.animationStyle] || {};
+    const pX        = spec.positionX == null ? 50 : spec.positionX;
+    const safePct   = Math.max(20, Math.min(spec.maxWidth || 85,
+                                            pX * 2 - EDGE_INSET_PCT,
+                                            (100 - pX) * 2 - EDGE_INSET_PCT));
+    const availW    = W * (Math.min(safePct, 100) / 100);
+    const strokeOut = (spec.strokeEnabled && spec.strokeWidth > 0) ? spec.strokeWidth : 0;
+    const bgPad     = state.containerBg
+      ? (state.containerBg.padH || 0)
+      : ((spec.bgEnabled && spec.bgOpacity > 0) ? (spec.bgPadH || 0) : 0);
+
+    let wordOut = spProps.padH || 0, scaleGrow = 0;
+    const stWords = state.words || [];
+    for(let i = 0; i < stWords.length; i++) {
+      const ws = stWords[i]; if(!ws) continue;
+      const wb    = ws.wordBar;
+      const wbPad = wb ? (wb.padH || 0) * Math.max(1, wb.scale || 1) : 0;
+      const hlPad = ws.bgColor ? (spec.highlightPadH || 0) : 0;
+      wordOut = Math.max(wordOut, wbPad, hlPad);
+      const wsScale = ws.scale || 1;
+      const pw = layout.words[i];
+      if(wsScale > 1 && pw) scaleGrow = Math.max(scaleGrow, (wsScale - 1) * (pw.width || 0));
+    }
+    if(!stWords.length && spec.highlightEnabled) {
+      wordOut = Math.max(wordOut, spec.highlightPadH || 0);
+    }
+    const padOut = 2 * (strokeOut + Math.max(bgPad, wordOut)) * scale;
+    const fitW   = layout.totalWidth + scaleGrow + padOut;
+    const fit    = (fitW > availW && fitW > 0) ? (availW / fitW) : 1;
+
+    // ── Per-word resolved values ─────────────────────────────────────────
+    // One entry per word with EVERYTHING a backend needs. No backend may derive
+    // any of this for itself.
+    const lmBase = letterMetrics(spec, fontPx);
+    const words = layout.words.map((pw, i) => {
+      const ws      = stWords[i] || {};
+      const wSize   = pw.size || fontPx;
+      const lm      = (wSize === fontPx) ? lmBase : letterMetrics(spec, wSize);
+      const baseline = pw.y + lmBase.baseline;
+      return {
+        index:      i,
+        text:       pw.text,
+        visible:    ws.visible !== false,
+        x:          pw.x + (ws.x || 0) * scale,
+        y:          baseline - lm.baseline + (ws.y || 0) * scale,
+        width:      pw.width,
+        fontPx:     wSize,
+        letterH:    lm.letterH,
+        baseline:   lm.baseline,
+        opticalY:   lm.centerY,
+        scale:      ws.scale == null ? 1 : ws.scale,
+        opacity:    ws.opacity == null ? 1 : ws.opacity,
+        rotation:   ws.rotation || 0,
+        color:      ws.color || spec.color || '#fff',
+        highlighted: !!ws.highlighted,
+        anchorBottom: !!ws.anchorBottom,
+        bgColor:    ws.bgColor || null,
+        wordBar:    ws.wordBar || null,
+        effects:    effectLayers(spec, ws, scale)
+      };
+    });
+
+    // Paint order: inactive words first, the highlighted one LAST so it sits on
+    // top. Canvas has no z-index (a later draw wins) and the DOM needs the same
+    // decision expressed as z-index — so the decision itself is made here, once.
+    const drawOrder = words.map((_, i) => i)
+      .sort((a, b) => (words[a].highlighted ? 1 : 0) - (words[b].highlighted ? 1 : 0));
+
+    return {
+      // identity
+      t: t, groupIndex: activeIndex, group: active,
+      drawOrder: drawOrder,
+      // frame geometry
+      width: W, height: H, scale: scale, fit: fit,
+      availWidth: availW, safePct: safePct,
+      // typography resolved once
+      fontFamily: spec.fontFamily, fontWeight: spec.fontWeight, fontStyle: spec.fontStyle,
+      fontPx: fontPx,
+      letterSpacing: spec.getScaledLetterSpacing(H, W),
+      strokeWidth: (spec.strokeEnabled ? spec.strokeWidth : 0) * scale,
+      strokeColor: spec.strokeColor,
+      lineHeight: spec.lineHeight,
+      // layout
+      centerX: layout.centerX, centerY: layout.centerY,
+      totalWidth: layout.totalWidth, totalHeight: layout.totalHeight,
+      lines: layout.lines,
+      // animation
+      containerOpacity: state.containerOpacity == null ? 1 : state.containerOpacity,
+      containerBg: state.containerBg || null,
+      animationStyle: spec.animationStyle,
+      // per-word
+      words: words,
+      // raw state/layout for anything a backend still needs verbatim
+      _state: state, _layout: layout
+    };
+  }
+
+  // ── DEBUG / VALIDATION (requirement 12) ──────────────────────────────────
+  // Flatten a frame to a comparable, log-friendly record. Both backends can be
+  // asked to describe what they actually applied, and the two records diffed, so
+  // a divergence is a failing key rather than something spotted by eye.
+  function describeFrame(frame) {
+    if(!frame) return { active: false };
+    const r = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
+    return {
+      active: true,
+      t: r(frame.t), groupIndex: frame.groupIndex,
+      frame: frame.width + 'x' + frame.height,
+      scale: r(frame.scale), fit: r(frame.fit), safePct: r(frame.safePct),
+      font: frame.fontFamily + ' / ' + frame.fontWeight + ' / ' + frame.fontStyle,
+      fontPx: r(frame.fontPx), letterSpacing: r(frame.letterSpacing),
+      strokeWidth: r(frame.strokeWidth), strokeColor: frame.strokeColor,
+      centerX: r(frame.centerX), centerY: r(frame.centerY),
+      totalWidth: r(frame.totalWidth), totalHeight: r(frame.totalHeight),
+      containerOpacity: r(frame.containerOpacity),
+      containerBg: frame.containerBg
+        ? { padH: r(frame.containerBg.padH), padV: r(frame.containerBg.padV),
+            radius: r(frame.containerBg.radius), color: frame.containerBg.color,
+            opacity: r(frame.containerBg.opacity) }
+        : null,
+      animationStyle: frame.animationStyle,
+      words: frame.words.map(w => ({
+        i: w.index, text: w.text,
+        x: r(w.x), y: r(w.y), width: r(w.width), fontPx: r(w.fontPx),
+        scale: r(w.scale), opacity: r(w.opacity), rotation: r(w.rotation),
+        color: w.color, highlighted: w.highlighted, bgColor: w.bgColor,
+        wordBar: w.wordBar ? { padH: r(w.wordBar.padH), padV: r(w.wordBar.padV),
+                               radius: r(w.wordBar.radius), color: w.wordBar.color,
+                               scale: r(w.wordBar.scale) } : null,
+        shadowLayers: w.effects.shadow.length,
+        glowLayers: w.effects.glow.length,
+        shadowCSS: layersToCSS(w.effects.shadow),
+        glowCSS: layersToCSS(w.effects.glow)
+      }))
+    };
+  }
+
+  // Deep-diff two describeFrame() records. Returns [] when identical.
+  // Used by the regression test and available at runtime for debugging.
+  function diffFrames(a, b, pathPrefix) {
+    const out = [];
+    const p = pathPrefix || '';
+    const isObj = (v) => v && typeof v === 'object';
+    if(!isObj(a) || !isObj(b)) {
+      if(a !== b) out.push({ path: p || '(root)', preview: a, exportv: b });
+      return out;
+    }
+    const keys = {};
+    Object.keys(a).forEach(k => keys[k] = 1);
+    Object.keys(b).forEach(k => keys[k] = 1);
+    Object.keys(keys).forEach(k => {
+      const av = a[k], bv = b[k];
+      if(isObj(av) || isObj(bv)) {
+        diffFrames(av, bv, p ? p + '.' + k : k).forEach(d => out.push(d));
+      } else if(av !== bv) {
+        out.push({ path: p ? p + '.' + k : k, preview: av, exportv: bv });
+      }
+    });
+    return out;
+  }
+
+  // ═══════════════════════════════════════════
+  // 8. DOM BACKEND  —  the preview consumes the SAME frame
+  // ═══════════════════════════════════════════
+  // applyFrameToDOM() is the preview's counterpart to drawFrame(). It takes a
+  // computeFrame() result and writes those exact numbers onto the caption DOM as
+  // CSS. It runs as a POST-PASS after a style block has built its markup, so it
+  // is authoritative: whatever a per-style block computed for these properties is
+  // overwritten by the shared frame. That is what stops the preview and the export
+  // drifting — the DOM cannot hold an opinion about a value the frame owns.
+  //
+  // Deliberate limits, so this cannot silently fight a style's own animation:
+  //
+  //   • Container geometry, typography and the auto-fit are ALWAYS applied. These
+  //     are never animated by CSS keyframes in any style.
+  //   • Per-word colour and the effect stack (shadow + glow, formatted from the
+  //     SAME descriptors the canvas casts) are ALWAYS applied.
+  //   • Per-word transform/opacity are applied only when `opts.ownsAnimation` is
+  //     false. Styles 4 and 6 drive transform/opacity from injected CSS keyframes;
+  //     hard-setting those would freeze their animation. Those two still need
+  //     their timing ported into AnimationEngine — until then their transform and
+  //     opacity are the one thing not frame-driven, and this is the single place
+  //     that exception lives.
+  //
+  // Returns a record of what it actually applied, so the debug comparison can
+  // diff DOM-applied values against the frame instead of relying on eyeballing.
+  function applyFrameToDOM(disp, frame, spec, opts) {
+    if(!disp) return null;
+    const o = opts || {};
+    if(!frame) {
+      // No caption at this time — the exporter paints nothing, so neither may the
+      // preview, or a gap between caption layers would show text in the editor
+      // that the exported file does not have.
+      disp.style.visibility = 'hidden';
+      return { active: false };
+    }
+    disp.style.visibility = '';
+
+    // previewScale converts frame (canvas-space) px into on-screen px. The frame
+    // itself is resolution-independent; only this last hop differs from export.
+    const k = (o.previewScale == null ? 1 : o.previewScale);
+    const px = (v) => (v * k).toFixed(2) + 'px';
+
+    // ── Container: typography + geometry, straight from the frame ──
+    disp.style.fontFamily    = frame.fontFamily;
+    disp.style.fontWeight    = String(frame.fontWeight);
+    disp.style.fontStyle     = frame.fontStyle;
+    disp.style.fontSize      = px(frame.fontPx);
+    disp.style.letterSpacing = px(frame.letterSpacing);
+    // lineHeight and maxWidth are deliberately NOT set here. The per-style blocks
+    // drive the flex layout (rowGap / columnGap / flexWrap) and already derive
+    // maxWidth from the SAME shared safe box, so writing them again would only
+    // risk fighting a layout this pass does not model.
+    if(!o.ownsAnimation) disp.style.opacity = String(frame.containerOpacity);
+
+    // ── Auto-fit: the frame already decided it; the DOM just applies it. ──
+    // Both backends therefore shrink by the identical factor.
+    const base = 'translate(-50%, -50%)';
+    disp.style.transform = base + (frame.fit < 0.999
+      ? ' scale(' + frame.fit.toFixed(4) + ')' : '');
+
+    const applied = {
+      active: true,
+      fontPx: frame.fontPx, letterSpacing: frame.letterSpacing,
+      fit: frame.fit, safePct: frame.safePct,
+      containerOpacity: o.ownsAnimation ? null : frame.containerOpacity,
+      words: []
+    };
+
+    // ── Per-word ──
+    const chips = disp.querySelectorAll('.word-chip');
+    for(let i = 0; i < frame.words.length && i < chips.length; i++) {
+      const w = frame.words[i], chip = chips[i];
+      if(!chip) continue;
+
+      // Effects: formatted from the SAME descriptors drawFrame() casts. Glow is
+      // listed BEFORE the shadow so CSS paints it nearer the glyph, matching the
+      // canvas group order (shadow furthest back, then glow, then sharp text).
+      const shadowCSS = layersToCSS(w.effects.shadow);
+      const glowCSS   = layersToCSS(w.effects.glow);
+      const stack     = [glowCSS, shadowCSS].filter(Boolean).join(', ');
+      // A gradient fill makes the glyph's own fill transparent, so text-shadow
+      // would paint OVER the visible gradient. filter:drop-shadow() is a
+      // post-composite effect and stays behind it.
+      if(spec.gradientEnabled && stack) {
+        chip.style.textShadow = '';
+        chip.style.filter = stack.split(/,(?![^()]*\))/)
+          .map(l => 'drop-shadow(' + l.trim() + ')').join(' ');
+      } else {
+        chip.style.filter = '';
+        chip.style.textShadow = stack;
+      }
+
+      chip.style.color = w.color;
+      // Shared paint order expressed as z-index (canvas uses draw order).
+      chip.style.zIndex = String(frame.drawOrder.indexOf(i) + 1);
+
+      if(!o.ownsAnimation) {
+        chip.style.transformOrigin = w.anchorBottom ? 'center bottom' : 'center center';
+        const parts = [];
+        if(w.rotation) parts.push('rotate(' + w.rotation + 'deg)');
+        if(w.scale !== 1) parts.push('scale(' + w.scale.toFixed(4) + ')');
+        chip.style.transform = parts.join(' ');
+        chip.style.opacity   = String(w.opacity);
+        chip.style.visibility = w.visible ? '' : 'hidden';
+      }
+
+      applied.words.push({
+        i: i, text: w.text, color: w.color,
+        scale: o.ownsAnimation ? null : w.scale,
+        opacity: o.ownsAnimation ? null : w.opacity,
+        shadowCSS: shadowCSS, glowCSS: glowCSS
+      });
+    }
+    return applied;
+  }
+
+  // ── DEBUG COMPARISON (requirement 12) ────────────────────────────────────
+  // Diff what the DOM actually applied against the authoritative frame. Any
+  // non-empty result is a preview/export divergence, named by key.
+  function compareDOMToFrame(applied, frame, opts) {
+    const o = opts || {};
+    const out = [];
+    if(!applied || !frame) {
+      if(!!applied !== !!frame) out.push({ path: 'active', preview: !!applied, exportv: !!frame });
+      return out;
+    }
+    const near = (a, b, tol) => Math.abs(a - b) <= (tol == null ? 0.01 : tol);
+    const cmp = (path, a, b, tol) => {
+      if(typeof a === 'number' && typeof b === 'number') {
+        if(!near(a, b, tol)) out.push({ path: path, preview: a, exportv: b });
+      } else if(a !== b) out.push({ path: path, preview: a, exportv: b });
+    };
+    cmp('fontPx', applied.fontPx, frame.fontPx);
+    cmp('letterSpacing', applied.letterSpacing, frame.letterSpacing);
+    cmp('fit', applied.fit, frame.fit);
+    cmp('safePct', applied.safePct, frame.safePct);
+    if(!o.ownsAnimation) cmp('containerOpacity', applied.containerOpacity, frame.containerOpacity);
+    applied.words.forEach((aw, i) => {
+      const fw = frame.words[i];
+      if(!fw) { out.push({ path: 'words['+i+']', preview: aw.text, exportv: '(missing)' }); return; }
+      cmp('words['+i+'].text', aw.text, fw.text);
+      cmp('words['+i+'].color', aw.color, fw.color);
+      cmp('words['+i+'].shadowCSS', aw.shadowCSS, layersToCSS(fw.effects.shadow));
+      cmp('words['+i+'].glowCSS', aw.glowCSS, layersToCSS(fw.effects.glow));
+      if(!o.ownsAnimation) {
+        cmp('words['+i+'].scale', aw.scale, fw.scale);
+        cmp('words['+i+'].opacity', aw.opacity, fw.opacity);
+      }
+    });
+    return out;
   }
 
   // ═══════════════════════════════════════════
@@ -1564,6 +1890,23 @@
     CANVAS_REF_W,
     CANVAS_REF_H,
     EDGE_INSET_PCT,
+    // ── Shared effect-layer model. The DOM preview formats these descriptors
+    // into CSS; the canvas exporter casts them. One expansion, two formatters —
+    // do NOT reimplement the falloff maths on either side.
+    shadowLayers,
+    glowLayers,
+    effectLayers,
+    layersToCSS,
+    // ── THE single source of truth. Both backends must consume computeFrame()
+    // and neither may recompute any value it returns.
+    computeFrame,
+    describeFrame,
+    diffFrames,
+    // ── DOM backend. The preview's counterpart to CaptionRenderer.drawFrame():
+    // it writes the frame's numbers onto the caption DOM as CSS. Do NOT compute
+    // any of these values in index.html — add them to computeFrame() instead.
+    applyFrameToDOM,
+    compareDOMToFrame,
     version: '1.1.0'
   };
   

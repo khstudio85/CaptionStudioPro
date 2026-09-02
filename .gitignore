@@ -143,3 +143,7 @@ vite.config.ts.timestamp-*
 .vite/
 # electron-builder output
 dist/
+
+# Local clone of the GitHub Releases repo used by `npm run release`.
+# It is a separate repository — committing it here would create a broken gitlink.
+CaptionStudioPro-releases/

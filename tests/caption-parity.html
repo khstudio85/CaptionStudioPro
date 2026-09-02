@@ -1,0 +1,266 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Caption parity regression test</title>
+<!--
+  PREVIEW ↔ EXPORT PARITY REGRESSION TEST
+
+  Run it:  serve the repo root over http and open /tests/caption-parity.html
+           (file:// will not work — the relative <script src> must load)
+
+  What it asserts, per requirement 13:
+    1. computeFrame() is complete and deterministic for every animation style at
+       0 / 25 / 50 / 75 / 100 % of the caption's life.
+    2. The DOM backend (applyFrameToDOM) applies exactly the frame's values —
+       compareDOMToFrame() must return zero divergences. This is the actual
+       preview code path, run against the same chip structure renderGroup builds.
+    3. The canvas backend (drawFrame) paints from the same frame.
+    4. Resolution independence: the same caption at 16:9 / 9:16 / 1:1 / 4:5 and at
+       a lower export resolution keeps the same RELATIVE geometry.
+    5. The shared effect model produces identical numbers for both backends.
+
+  If you change an animation style and this goes red, the style changed a value in
+  only one of the two backends — fix it in AnimationEngine / TextLayoutEngine /
+  the shared effect model, not in a backend.
+-->
+<style>
+  body { margin:0; background:#0d0d10; color:#c8c8d0; font:12px ui-monospace, monospace; padding:16px; }
+  pre  { white-space:pre-wrap; margin:0; }
+  .pass { color:#4fd67a; } .fail { color:#ff5c5c; font-weight:700; } .note { color:#7f8fa6; }
+  h1 { font:600 15px ui-monospace; color:#9fd; margin:0 0 12px; }
+  #summary { margin:14px 0; padding:10px 12px; border-radius:6px; font-weight:700; }
+  .ok  { background:rgba(79,214,122,0.12); border:1px solid rgba(79,214,122,0.4); color:#4fd67a; }
+  .bad { background:rgba(255,92,92,0.12); border:1px solid rgba(255,92,92,0.4); color:#ff5c5c; }
+</style>
+<h1>Caption parity regression test — preview vs export computed values</h1>
+<div id="summary">running…</div>
+<pre id="log"></pre>
+
+<!-- the DOM the preview builds: #captionDisplay containing .word-chip spans -->
+<div id="captionDisplay" style="position:absolute;left:-9999px;top:-9999px;display:flex;"></div>
+
+<script src="../caption-engine.js"></script>
+<script>
+const out = [];
+let fails = 0, checks = 0;
+function check(ok, msg) {
+  checks++; if (!ok) fails++;
+  out.push('<span class="' + (ok ? 'pass' : 'fail') + '">' + (ok ? '  PASS  ' : '  FAIL  ') + '</span>' + msg);
+}
+function note(msg) { out.push('<span class="note">' + msg + '</span>'); }
+function head(msg) { out.push(''); out.push('<b>' + msg + '</b>'); }
+
+// ── THE TEST CAPTION ─────────────────────────────────────────────────────────
+// Deliberately exercises everything requirement 13 lists: several normal words,
+// an active highlighted word, a large active word (style 3 activeSizeMul), a
+// gradient fill, stroke, glow, multi-layer shadow, a background bar / border,
+// and animation in / hold / out.
+const WORDS = ['we', 'got', 'the', 'Amazon', 'Ads', 'today'];
+function makeGroup() {
+  return {
+    start: 0, end: 3.0, words: WORDS.slice(),
+    wordTimes: WORDS.map((w, i) => ({ start: i * 0.5, end: i * 0.5 + 0.5 }))
+  };
+}
+const SHADOWS = [
+  { dist: 6,  angle: 135, size: 16, spread: 4, opacity: 80, color: '#000000' },
+  { dist: 10, angle: 90,  size: 24, spread: 6, opacity: 55, color: '#001133' }
+];
+function makeSpec(styleN, over) {
+  return new CaptionEngine.CaptionStyleSpec(Object.assign({
+    fontFamily: 'Arial', fontWeight: 900, fontStyle: 'normal',
+    fontSize: 90, color: '#12c98a',
+    canvasWidth: 1080, canvasHeight: 1920,
+    positionX: 50, positionY: 70, maxWidth: 85, maxWordsPerLine: 6,
+    animationStyle: styleN,
+    strokeEnabled: true, strokeWidth: 6, strokeColor: '#101010',
+    letterSpacing: 2, wordSpacing: 0, lineHeight: 1.2,
+    gradientEnabled: true, gradientColor1: '#FF512F', gradientColor2: '#F09819', gradientAngle: 135,
+    highlightEnabled: true, highlightBgColor: '#FFE500', highlightTextColor: '#000000',
+    highlightPadH: 8, highlightPadV: 5, highlightRadius: 6,
+    bgEnabled: true, bgColor: '#000000', bgOpacity: 45, bgPadH: 18, bgPadV: 10, bgRadius: 12,
+    shadows: SHADOWS.slice(),
+    glowEnabled: true, glowColor: '#ff7a1a', glowIntensity: 14, glowSpread: 26,
+    styleProps: {
+      1: { bgOpacity: 0.85, barRadius: 6, inDuration: 200, outDuration: 200 },
+      2: { startScale: 0, bounceScale: 115, inDuration: 180, outDuration: 120, originX: 50, originY: 100 },
+      3: { dimOpacity: 18, spokenOpacity: 45, activeOpacity: 100, activeScale: 106,
+           activeColor: '#04FD00', transitionMs: 120, activeSizeOn: true, activeSizeMul: 1.6,
+           wordGapExtra: 0 },
+      4: { slideFrom: 'bottom', inDuration: 200, fadeOpacity: 20, maxWords: 4 },
+      5: { dimOpacity: 20, spokenOpacity: 75, activeColor: '', glowColor: '', glowSize: 8 },
+      6: { line1Dur: 200, line2Dur: 600, line2Delay: 210, scaleStart: 99, direction: 'up',
+           line1SizeMul: 0.4, line2SizeMul: 0.9, lineGap: -13, glowAmt: 14, splitAt: 5 },
+      7: { bgOpacity: 100, barRadius: 7, padH: 8, padV: 5, startDelay: 50,
+           bounceScale: 104, bouncePeakAt: 70, bez1x: 0.25, bez1y: 1.0, bez2x: 0.5, bez2y: 1.0 },
+      8: { wordDelay: 260, animDuration: 900, sizeVariation: 'low', randomFonts: false,
+           randomColors: false, baseColor: '#ffffff', animType: 'smoothNormal' }
+    }
+  }, over || {}));
+}
+
+// 0 / 25 / 50 / 75 / 100 % of the caption's life. The last is nudged inside the
+// range because a caption is defined on [start, end).
+const PCTS = [0, 0.25, 0.5, 0.75, 1];
+function timesFor(g) {
+  return PCTS.map(p => g.start + (g.end - g.start) * p - (p === 1 ? 0.001 : 0));
+}
+
+const RESOLUTIONS = [
+  { name: '9:16 1080x1920', w: 1080, h: 1920 },
+  { name: '16:9 1920x1080', w: 1920, h: 1080 },
+  { name: '1:1  1080x1080', w: 1080, h: 1080 },
+  { name: '4:5  1080x1350', w: 1080, h: 1350 },
+  { name: '9:16  720x1280 (low-res export)', w: 720, h: 1280 }
+];
+
+const STYLES = [0,1,2,3,4,5,6,7,8];
+// Styles whose transform/opacity are CSS-keyframe driven in the preview and so
+// are not claimed by the frame yet. Kept in sync with _FRAME_OWNS_OWN_ANIMATION
+// in index.html — if that list changes, change this one.
+const KEYFRAME_STYLES = { 4: true, 6: true };
+
+const renderer = new CaptionEngine.CaptionRenderer();
+const disp = document.getElementById('captionDisplay');
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+
+function buildChips(n) {
+  disp.innerHTML = '';
+  for (let i = 0; i < n; i++) {
+    const c = document.createElement('span');
+    c.className = 'word-chip';
+    c.textContent = WORDS[i] || 'x';
+    disp.appendChild(c);
+  }
+}
+function inkedPx(w, h) {
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 6) n++;
+  return n;
+}
+
+// ── 1. computeFrame completeness + determinism ───────────────────────────────
+head('1. computeFrame() complete and deterministic — all styles x 5 timestamps');
+STYLES.forEach(st => {
+  const g = makeGroup(), spec = makeSpec(st);
+  const problems = [];
+  timesFor(g).forEach((t, pi) => {
+    const f  = renderer.computeFrame(spec, g, t, 1080, 1920);
+    const f2 = renderer.computeFrame(spec, g, t, 1080, 1920);
+    if (!f) { problems.push(PCTS[pi]*100 + '%:null'); return; }
+    const bad = [];
+    if (!(f.words && f.words.length === WORDS.length)) bad.push('words');
+    if (!(f.fontPx > 0)) bad.push('fontPx');
+    if (!(f.fit > 0 && f.fit <= 1)) bad.push('fit');
+    if (!(f.scale > 0)) bad.push('scale');
+    if (!f.drawOrder || f.drawOrder.length !== f.words.length) bad.push('drawOrder');
+    if (!f.words.every(w => isFinite(w.x) && isFinite(w.y) && w.fontPx > 0)) bad.push('word geom');
+    if (!f.words.every(w => w.effects && w.effects.shadow.length && w.effects.glow.length)) bad.push('effects');
+    // determinism: identical inputs must give an identical description
+    if (CaptionEngine.diffFrames(CaptionEngine.describeFrame(f),
+                                 CaptionEngine.describeFrame(f2)).length) bad.push('non-deterministic');
+    if (bad.length) problems.push(PCTS[pi]*100 + '%:' + bad.join('/'));
+  });
+  check(problems.length === 0, 'style ' + st + (problems.length ? '  ' + problems.join(' ') : '  ok at 0/25/50/75/100%'));
+});
+
+// ── 2. DOM backend applies exactly the frame's values ────────────────────────
+head('2. DOM backend (applyFrameToDOM) matches the frame — zero divergences');
+STYLES.forEach(st => {
+  const g = makeGroup(), spec = makeSpec(st);
+  const owns = !!KEYFRAME_STYLES[st];
+  let worst = null, worstT = null;
+  timesFor(g).forEach((t, pi) => {
+    const f = renderer.computeFrame(spec, g, t, 1080, 1920);
+    if (!f) return;
+    buildChips(f.words.length);
+    const applied = CaptionEngine.applyFrameToDOM(disp, f, spec, { previewScale: 0.25, ownsAnimation: owns });
+    const diffs = CaptionEngine.compareDOMToFrame(applied, f, { ownsAnimation: owns });
+    if (diffs.length && !worst) { worst = diffs; worstT = PCTS[pi] * 100 + '%'; }
+  });
+  check(!worst, 'style ' + st + (owns ? ' (transform/opacity keyframe-driven, excluded)' : '') +
+    (worst ? '  at ' + worstT + ': ' + worst.slice(0,3).map(d => d.path + ' dom=' + d.preview + ' frame=' + d.exportv).join('; ')
+           : '  DOM == frame'));
+});
+
+// ── 3. Canvas backend paints from the same frame ─────────────────────────────
+head('3. Canvas backend (drawFrame) paints from the same frame');
+note('   A frame may legitimately be blank: style 2 pops from scale 0, style 6 fades');
+note('   the container in from opacity 0. So the assertion is that the canvas paints');
+note('   EXACTLY when the frame says it should — a blank frame must be explained by');
+note('   the frame (zero container opacity, or no visible word with opacity > 0).');
+STYLES.forEach(st => {
+  const g = makeGroup(), spec = makeSpec(st);
+  canvas.width = 1080; canvas.height = 1920;
+  const bad = [], inks = [];
+  timesFor(g).forEach((t, pi) => {
+    const f = renderer.computeFrame(spec, g, t, 1080, 1920);
+    renderer.renderComposite(ctx, spec, [g], t, 1080, 1920, true);
+    const px = inkedPx(1080, 1920);
+    inks.push(px);
+    // Threshold must match inkedPx()'s alpha>6 cutoff (6/255 = 0.024), or a word
+    // fading through ~0.01 opacity counts as "should paint" while painting alpha
+    // ~2.7 that the detector cannot see. 0.05 leaves margin either side.
+    const VIS = 0.05;
+    const shouldPaint = !!f && f.containerOpacity > VIS &&
+      f.words.some(w => w.visible && w.opacity > VIS && w.scale > VIS);
+    if (shouldPaint && px < 500)      bad.push(PCTS[pi]*100 + '% frame says paint but blank');
+    if (!shouldPaint && px > 500)     bad.push(PCTS[pi]*100 + '% frame says blank but painted');
+  });
+  check(bad.length === 0, 'style ' + st + '  ink ' + inks.join('/') +
+    (bad.length ? '   ' + bad.join('; ') : '   canvas agrees with the frame at all 5'));
+});
+
+// ── 4. Resolution independence ───────────────────────────────────────────────
+head('4. Resolution / aspect independence — relative geometry holds');
+note('   font as % of frame height, and caption width as % of frame width, must be');
+note('   stable across aspects (the caption may read narrower on a wider frame,');
+note('   which is the intended height-proportional scaling).');
+STYLES.forEach(st => {
+  const g = makeGroup(), spec = makeSpec(st);
+  const t = g.start + (g.end - g.start) * 0.5;
+  const fontFracs = [], clipped = [];
+  RESOLUTIONS.forEach(R => {
+    const f = renderer.computeFrame(makeSpec(st, { canvasWidth: R.w, canvasHeight: R.h }), g, t, R.w, R.h);
+    if (!f) return;
+    fontFracs.push(f.fontPx / R.h);
+    // effective painted half-width after the shared auto-fit, vs the frame
+    const halfW = (f.totalWidth * f.fit) / 2;
+    if (f.centerX - halfW < -1 || f.centerX + halfW > R.w + 1) clipped.push(R.name);
+  });
+  const mn = Math.min.apply(null, fontFracs), mx = Math.max.apply(null, fontFracs);
+  const spread = mn > 0 ? (mx - mn) / mn : 1;
+  check(spread < 0.03 && clipped.length === 0,
+    'style ' + st + '  font/height spread = ' + (spread * 100).toFixed(2) + '% (allow 3%)' +
+    (clipped.length ? '   CLIPPED at: ' + clipped.join(', ') : '   nothing clipped'));
+});
+
+// ── 5. Shared effect model gives both backends the same numbers ──────────────
+head('5. Shared effect model — one expansion, two formatters');
+{
+  const spec = makeSpec(7);
+  const scale = spec.typeScale(1080, 1920);
+  const sh = CaptionEngine.shadowLayers(SHADOWS[0], scale);
+  const gl = CaptionEngine.glowLayers({ color: '#ff7a1a', size: 14, spread: 26 }, scale);
+  check(sh.length === 8, 'one shadow entry -> ' + sh.length + ' layers (contact/key/mid/penumbra/halo/spread x2/rim)');
+  check(gl.length === 3, 'glow -> ' + gl.length + ' layers (core/spread/wide halo)');
+  const css = CaptionEngine.layersToCSS(sh);
+  check(css.split(/,(?![^()]*\))/).length === sh.length,
+        'layersToCSS emits one CSS entry per descriptor (' + sh.length + ')');
+  // opacity is a 0-100 slider; the mid layer must carry it as a 0-1 alpha
+  const mid = sh[2];
+  check(/rgba\(0,0,0,0\.8\)/.test(mid.color),
+        'opacity 80 becomes alpha 0.8 (not clamped to 1): ' + mid.color);
+  const zero = CaptionEngine.shadowLayers({ dist: 0, angle: 0, size: 0, spread: 0, opacity: 0, color: '#000' }, 1);
+  check(zero.length === 0, 'a fully transparent shadow produces no layers (' + zero.length + ')');
+}
+
+// ── done ─────────────────────────────────────────────────────────────────────
+document.getElementById('log').innerHTML = out.join('\n');
+const sum = document.getElementById('summary');
+sum.className = fails === 0 ? 'ok' : 'bad';
+sum.textContent = fails === 0
+  ? 'ALL ' + checks + ' CHECKS PASSED — preview and export consume identical computed values'
+  : fails + ' of ' + checks + ' CHECKS FAILED';
+window.__PARITY_RESULT = { checks: checks, fails: fails, log: out.join('\n').replace(/<[^>]+>/g, '') };
+</script>
