@@ -1,0 +1,181 @@
+<!doctype html>
+<meta charset="utf-8"><title>Smart export engine checks</title>
+<!--
+  SMART EXPORT ENGINE REGRESSION TEST
+
+  Run it:  serve the repo root over http and open /tests/smart-export.html
+           (file:// will not work - the relative <script src> must load)
+
+  Asserts:
+    1. All nine built-in styles declare themselves into the style REGISTRY at
+       module load, and every channel they declare is one both backends apply.
+    2. A style registered at RUNTIME is rendered by the canvas exporter with no
+       export-side code at all - the "most important rule". Its declared defaults
+       also fill in for a project that predates the property.
+    3. A malformed declaration (unknown channel / missing calculate) is rejected
+       loudly rather than silently mis-exporting.
+    4. validateProject() preflight catches unregistered styles, invalid timing,
+       word/timing mismatches and empty projects.
+    5. Frame dedupe: how many frames of a realistic project are exact repeats,
+       and how much encoding time that saves.
+    6. CORRECTNESS GUARD: equal frameSignature must mean byte-identical pixels.
+       If this fails, the dedupe is lossy and frameSignature is missing a field
+       that affects rendering. Do not weaken this check - add the field.
+-->
+<style>body{margin:0;background:#0d0d10;color:#c8c8d0;font:11px ui-monospace,monospace;padding:14px;white-space:pre}</style>
+<div id="log">running…</div>
+<script src="../caption-engine.js"></script>
+<script>
+const out=[]; let fails=0, checks=0;
+function ck(ok,m){ checks++; if(!ok)fails++; out.push((ok?'  PASS  ':'  FAIL  ')+m); }
+function head(m){ out.push(''); out.push('== '+m+' =='); }
+function note(m){ out.push('   '+m); }
+
+const W=1080,H=1920;
+// A realistic project: 5 caption layers, ~0.3s per word, 10s of timeline.
+const LAYERS=[];
+for(let L=0;L<5;L++){
+  const words=['this','is','caption','layer','number',String(L+1)];
+  LAYERS.push({ start:L*2, end:L*2+1.8, words:words,
+    wordTimes: words.map((w,i)=>({ start:L*2+i*0.3, end:L*2+i*0.3+0.3 })) });
+}
+function sp(st,over){
+  return new CaptionEngine.CaptionStyleSpec(Object.assign({
+    fontFamily:'Arial', fontWeight:900, fontSize:90, color:'#12c98a',
+    canvasWidth:W, canvasHeight:H, positionX:50, positionY:70, maxWidth:85, maxWordsPerLine:6,
+    animationStyle:st, strokeEnabled:true, strokeWidth:6, strokeColor:'#101010', letterSpacing:2,
+    highlightEnabled:true, highlightBgColor:'#FFE500', highlightPadH:8, highlightPadV:5, highlightRadius:6,
+    shadows:[{dist:6,angle:135,size:16,spread:4,opacity:80,color:'#000000'}],
+    glowEnabled:true, glowColor:'#ff7a1a', glowIntensity:14, glowSpread:26,
+    styleProps:{}
+  }, over||{}));
+}
+function inked(cx,w,h){ const d=cx.getImageData(0,0,w,h).data; let n=0; for(let i=3;i<d.length;i+=4) if(d[i]>6)n++; return n; }
+
+head('1. REGISTRY - all nine built-ins declare themselves');
+const defs=CaptionEngine.listStyles();
+ck(defs.length===9,'listStyles() -> '+defs.length+' styles: '+defs.map(d=>d.id+':'+d.name).join(', '));
+ck(defs.every(d=>typeof d.calculate==='function'),'every style has a calculate() fn');
+ck(defs.every(d=>d.produces.every(c=>CaptionEngine.RENDER_CHANNELS.indexOf(c)>=0)),
+   'every declared channel is in RENDER_CHANNELS');
+
+head('2. REGISTRY - a NEW style is export-compatible with NO export-side code');
+{
+  let threw=null;
+  try{
+    CaptionEngine.registerStyle(99,{
+      name:'Test Zoom Spin',
+      produces:['opacity','scale','rotation','color'],
+      requires:['spinDeg'],
+      defaults:{ spinDeg:45, zoomFrom:0.5 },
+      calculate:(spec,group,t)=>{
+        const p=Math.max(0,Math.min(1,(t-group.start)/Math.max(0.001,group.end-group.start)));
+        const pr=CaptionEngine.resolveStyleProps(spec,99);
+        return { containerOpacity:1, words:group.words.map(()=>({
+          opacity:p, scale:pr.zoomFrom+(1-pr.zoomFrom)*p,
+          rotation:pr.spinDeg*(1-p), color:spec.color })) };
+      }
+    });
+  }catch(e){ threw=e; }
+  ck(!threw,'registerStyle(99) accepted'+(threw?': '+threw.message:''));
+  const r=new CaptionEngine.CaptionRenderer();
+  const g=LAYERS[0];
+  const f=r.computeFrame(sp(99),g,g.start+0.9,W,H);
+  ck(!!f&&f.words.length===6,'computeFrame renders the NEW style with no export change');
+  ck(!!f&&Math.abs(f.words[0].rotation)>0,'its rotation channel reaches the frame: '+(f?f.words[0].rotation.toFixed(1):'-')+' deg');
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const cx=c.getContext('2d'); r.drawFrame(cx,f,sp(99));
+  const n=inked(cx,W,H);
+  ck(n>500,'and the canvas EXPORTER paints it: '+n+' inked px');
+  ck(CaptionEngine.resolveStyleProps(sp(99),99).zoomFrom===0.5,
+     'declared defaults fill in for a project that predates the property (back-compat)');
+}
+
+head('3. REGISTRY - a bad declaration is rejected loudly');
+{
+  let m1='';
+  try{ CaptionEngine.registerStyle(98,{name:'Bad',calculate:function(){return{words:[]};},produces:['warpFactor']}); }
+  catch(e){ m1=e.message; }
+  ck(/warpFactor/.test(m1),'unknown channel rejected: '+m1.slice(0,86));
+  let m2='';
+  try{ CaptionEngine.registerStyle(97,{name:'NoFn'}); }catch(e){ m2=e.message; }
+  ck(/calculate/.test(m2),'missing calculate() rejected: '+m2.slice(0,66));
+}
+
+head('4. VALIDATION - preflight catches real problems');
+{
+  const v1=CaptionEngine.validateProject(sp(7),LAYERS);
+  ck(v1.ok,'healthy project passes ('+v1.styles.length+' style(s), '+v1.warnings.length+' warning(s))');
+  const v2=CaptionEngine.validateProject(sp(7),[{start:5,end:2,words:['a'],wordTimes:[{start:5,end:6}]}]);
+  ck(!v2.ok&&v2.errors.some(e=>/before it starts/.test(e)),'inverted timing -> ERROR');
+  const v3=CaptionEngine.validateProject(sp(42),LAYERS);
+  ck(!v3.ok&&v3.errors.some(e=>/not registered/.test(e)),'unregistered style -> ERROR, not a silent fallback');
+  const v4=CaptionEngine.validateProject(sp(7,{strokeEnabled:true,strokeWidth:0}),LAYERS);
+  ck(v4.warnings.some(w=>/Stroke is enabled/.test(w)),'stroke on with zero width -> warning');
+  const v5=CaptionEngine.validateProject(sp(7),[{start:0,end:2,words:['a','b','c'],wordTimes:[{start:0,end:1}]}]);
+  ck(v5.warnings.some(w=>/word timings/.test(w)),'word/timing count mismatch -> warning');
+  const v6=CaptionEngine.validateProject(sp(7),[]);
+  ck(!v6.ok,'no captions -> ERROR');
+  note('sample: '+CaptionEngine.formatValidation(v1).split('\n')[0]);
+}
+
+head('5. PERFORMANCE - how many frames are exact repeats?');
+{
+  const r=new CaptionEngine.CaptionRenderer();
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const cx=c.getContext('2d');
+  const fps=30, dur=10, total=fps*dur;
+  [0,1,3,7].forEach(st=>{
+    const spec=sp(st);
+    let prev=null, enc=0;
+    const tA=performance.now();
+    for(let f=0;f<total;f++){
+      const fr=r.computeFrame(spec,LAYERS,f/fps,W,H);
+      const sg=CaptionEngine.frameSignature(fr);
+      if(sg!==prev){ r.drawFrame(cx,fr,spec); if(!fr)cx.clearRect(0,0,W,H); c.toDataURL('image/png'); enc++; prev=sg; }
+    }
+    const dedupeMs=performance.now()-tA;
+    const tB=performance.now();
+    for(let f=0;f<total;f++){
+      const fr=r.computeFrame(spec,LAYERS,f/fps,W,H);
+      r.drawFrame(cx,fr,spec); if(!fr)cx.clearRect(0,0,W,H);
+      c.toDataURL('image/png');
+    }
+    const naiveMs=performance.now()-tB;
+    out.push('   style '+st+'  '+enc+'/'+total+' encoded ('+Math.round((1-enc/total)*100)+'% skipped)   '+
+             (naiveMs/1000).toFixed(2)+'s -> '+(dedupeMs/1000).toFixed(2)+'s   '+
+             (naiveMs/dedupeMs).toFixed(2)+'x faster');
+    ck(dedupeMs<naiveMs,'style '+st+' dedupe faster ('+(naiveMs/dedupeMs).toFixed(2)+'x)');
+  });
+}
+
+head('6. CORRECTNESS - equal signature must mean byte-equal pixels');
+{
+  const r=new CaptionEngine.CaptionRenderer();
+  const a=document.createElement('canvas'); a.width=540; a.height=960;
+  const spec=sp(7);
+  // WARM-UP: discard the first render. The very first rasterisation of a font at
+  // a given size differs from later ones by ~1-2 levels on a handful of
+  // antialiased pixels (glyph cache cold), which is a browser warm-up artifact,
+  // not a frame-value difference. Measuring it would test the font cache, not us.
+  { const cx0=a.getContext('2d'); cx0.clearRect(0,0,540,960);
+    r.drawFrame(cx0, r.computeFrame(spec,LAYERS,0,540,960), spec); a.toDataURL('image/png'); }
+  let pairs=0, mismatches=0, prevSig=null, prevPng=null;
+  for(let f=0;f<150;f++){
+    const fr=r.computeFrame(spec,LAYERS,f/30,540,960);
+    const sg=CaptionEngine.frameSignature(fr);
+    const cx=a.getContext('2d'); cx.clearRect(0,0,540,960);
+    r.drawFrame(cx,fr,spec);
+    const png=a.toDataURL('image/png');
+    if(sg===prevSig){ pairs++; if(png!==prevPng) mismatches++; }
+    prevSig=sg; prevPng=png;
+  }
+  ck(pairs>0&&mismatches===0,
+     'checked '+pairs+' same-signature pairs, '+mismatches+' pixel mismatches (must be 0)');
+}
+
+out.push('');
+out.push(fails===0?('ALL '+checks+' CHECKS PASSED'):(fails+' of '+checks+' FAILED'));
+document.getElementById('log').textContent=out.join('\n');
+window.__S=out.join('\n');
+</script>

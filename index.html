@@ -18954,6 +18954,23 @@ function showProfessionalExportModal() {
             </div>
           </div>
 
+          <!-- Background mode (§5): composite target for the captions -->
+          <div style="margin-bottom:20px;">
+            <div style="font-size:11px;font-weight:800;color:#888;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;">Background</div>
+            <select id="expBgMode" style="
+              width:100%;padding:10px 12px;border-radius:8px;
+              background:rgba(255,255,255,0.04);color:#fff;
+              border:1px solid rgba(255,255,255,0.1);font-size:13px;font-weight:600;cursor:pointer;
+            ">
+              <option value="auto" selected>Video footage (or solid if audio-only)</option>
+              <option value="solid">Solid colour only</option>
+              <option value="transparent">Transparent (alpha) &mdash; .mov ProRes 4444</option>
+            </select>
+            <div id="expBgModeHint" style="font-size:10px;color:#888;margin-top:6px;line-height:1.5;">
+              Captions are burned over your footage.
+            </div>
+          </div>
+
           <!-- Options -->
           <div style="
             background: rgba(255,255,255,0.03);
@@ -19023,6 +19040,21 @@ function showProfessionalExportModal() {
     
     document.body.appendChild(modal);
     
+    // Background-mode hint, so the chosen container/codec is never a surprise
+    const _bgSel = document.getElementById('expBgMode');
+    const _bgHint = document.getElementById('expBgModeHint');
+    const _bgHints = {
+      auto:        'Captions are burned over your footage.',
+      solid:       'Captions over a flat colour (uses the Background colour from the canvas panel). Footage is ignored.',
+      transparent: 'Caption-only video with a real alpha channel, for dropping over footage in another editor. ' +
+                   'Saved as .mov / ProRes 4444 — H.264 MP4 cannot carry transparency. Files are much larger.'
+    };
+    if(_bgSel && _bgHint) {
+      _bgSel.addEventListener('change', () => {
+        _bgHint.textContent = _bgHints[_bgSel.value] || '';
+      });
+    }
+
     // Quality selection
     let selectedQuality = 'high';
     modal.querySelectorAll('.exp-quality-card').forEach(card => {
@@ -19048,7 +19080,8 @@ function showProfessionalExportModal() {
         quality: selectedQuality,
         useGPU: document.getElementById('expUseGPU').checked,
         resolution: document.getElementById('expResolution').value, // 'original' | 'WxH'
-        fps: document.getElementById('expFps').value                // 'original' | number-string
+        fps: document.getElementById('expFps').value,               // 'original' | number-string
+        bgMode: (document.getElementById('expBgMode') || {}).value || 'auto'
       });
     });
     
@@ -19327,12 +19360,18 @@ async function exportStyledVideo(format) {
   const exportOptions = await showProfessionalExportModal();
   if(!exportOptions) return;
   
-  // Get output path
-  const suggestedName = (window._audioFileName || 'video').replace(/\.[^.]+$/, '') + '_captioned.mp4';
+  // Get output path. A transparent export MUST NOT be an .mp4 — H.264 has no
+  // alpha channel — so the container follows the chosen background mode.
+  const _isAlpha = exportOptions.bgMode === 'transparent';
+  const _base = (window._audioFileName || 'video').replace(/\.[^.]+$/, '');
+  const suggestedName = _base + (_isAlpha ? '_captions_alpha.mov' : '_captioned.mp4');
   const saveResult = await window.electronAPI.saveFileDialog({
-    title: 'Save Video with Captions',
+    title: _isAlpha ? 'Save Transparent Caption Video' : 'Save Video with Captions',
     defaultPath: suggestedName,
-    filters: [{ name: 'MP4 Video', extensions: ['mp4'] }]
+    filters: _isAlpha
+      ? [{ name: 'QuickTime ProRes 4444 (alpha)', extensions: ['mov'] },
+         { name: 'WebM VP9 (alpha)',              extensions: ['webm'] }]
+      : [{ name: 'MP4 Video', extensions: ['mp4'] }]
   });
   
   if(saveResult.canceled) return;
@@ -19416,6 +19455,34 @@ async function exportStyledVideo(format) {
   
   console.log('[Export] Duration:', duration + 's, Frames:', totalFrames);
   
+  // ══════════════════════════════════════════════════════════════════════
+  // EXPORT PREFLIGHT (§8) — refuse to export something wrong
+  // ══════════════════════════════════════════════════════════════════════
+  // Registry-driven, so a style added later is validated automatically. Errors
+  // abort; warnings are surfaced and the export continues.
+  try {
+    const _spec = CaptionEngine.StyleCollector.fromUI();
+    const _v = CaptionEngine.validateProject(_spec, wordGroups, {
+      styleOf: (gi) => (typeof getLayerAnimStyle === 'function'
+        ? getLayerAnimStyle(gi) : _spec.animationStyle)
+    });
+    console.log('[Export] Preflight:\n' + CaptionEngine.formatValidation(_v));
+    if(!_v.ok) {
+      alert('❌ Export cancelled — the project cannot be rendered correctly:\n\n' +
+            _v.errors.map(e => '• ' + e).join('\n') +
+            '\n\nFixing these is required: exporting anyway would produce a video that ' +
+            'does not match the preview.');
+      return;
+    }
+    if(_v.warnings.length) {
+      showToast('⚠️ ' + _v.warnings.length + ' export warning(s) — see console');
+    }
+  } catch(err) {
+    console.error('[Export] Preflight failed:', err);
+    alert('❌ Export cancelled — preflight check failed:\n\n' + (err && err.message || err));
+    return;
+  }
+
   // Show progress modal
   showExportProgressModal();
   updateExportProgress({ percent: 0, status: 'Preparing frames...', phase: 'prepare' });
@@ -19444,8 +19511,13 @@ async function exportStyledVideo(format) {
           timemark: (progress * duration).toFixed(1) + 's'
         });
       },
-      async (index, dataUrl) => {
-        const r = await window.electronAPI.exportAddFrame({ id: sessionId, index, dataUrl });
+      async (index, dataUrl, isRepeat) => {
+        // A repeat frame is byte-identical to the previous one, so send a flag
+        // instead of ~100KB of base64 and let the main process copy the file.
+        const payload = isRepeat
+          ? { id: sessionId, index, repeatPrevious: true }
+          : { id: sessionId, index, dataUrl };
+        const r = await window.electronAPI.exportAddFrame(payload);
         if(!r || !r.success) throw new Error('Frame write failed: ' + (r && r.error || 'unknown'));
       }
     );
@@ -19464,6 +19536,7 @@ async function exportStyledVideo(format) {
       fpsExact: fpsExact,
       quality: exportOptions.quality,
       useGPU: exportOptions.useGPU,
+      bgMode: exportOptions.bgMode || 'auto',
       // Used only when the source has NO video stream (audio-only project):
       // FFmpeg then renders the captions over this solid colour.
       bgColor: (document.getElementById('bgColor') || {}).value || '#000000'
@@ -19538,28 +19611,69 @@ async function renderCaptionFrames(width, height, fps, duration, offsetTime, onP
               '| style', spec.animationStyle, '| groups', groups.length,
               '| offset', offsetTime);
 
-  let emptyCount = 0;
+  // ══════════════════════════════════════════════════════════════════════
+  // FRAME LOOP — encode only the frames that actually differ
+  // ══════════════════════════════════════════════════════════════════════
+  // canvas.toDataURL() costs ~14.6 ms/frame at 1080x1920 against ~0.5 ms to
+  // draw, so PNG encoding is ~96% of this phase. Captions hold still between
+  // word changes and gaps are entirely empty, so a large share of frames are
+  // exact repeats of the one before.
+  //
+  // CaptionEngine.frameSignature() is an exact fingerprint of everything that
+  // affects pixels. Equal signature => byte-identical image, so we can skip BOTH
+  // the draw and the encode and tell the main process to reuse the previous PNG.
+  // This is lossless: it is the same image, not an approximation.
+  let emptyCount = 0, encoded = 0, reused = 0;
+  let prevSig = null, prevDataUrl = null;
+  let lastYield = Date.now();
+  const t0 = Date.now();
+
   for(let f = 0; f < totalFrames; f++) {
     const t = offsetTime + (f / fps);
-    // renderComposite clears the canvas, finds the active group at t, and draws it.
-    let hadActive = false;
-    for(let gi = 0; gi < groups.length; gi++) {
-      if(t >= groups[gi].start && t < groups[gi].end) { hadActive = true; break; }
-    }
-    if(!hadActive) emptyCount++;
-    renderer.renderComposite(ctx, spec, groups, t, width, height, true);
 
-    const dataUrl = canvas.toDataURL('image/png');
-    if(onFrame) { await onFrame(f, dataUrl); }
-    else { frames.push(dataUrl); }
+    // Compute the frame first — cheap, and it tells us whether anything changed.
+    const frame = renderer.computeFrame(spec, groups, t, width, height);
+    if(!frame) emptyCount++;
+    const sig = CaptionEngine.frameSignature(frame);
+
+    if(sig === prevSig && prevDataUrl !== null) {
+      // Identical to the previous frame. Reuse it: no draw, no encode, and (for
+      // the streaming path) no re-sending ~100KB of base64 over IPC either.
+      reused++;
+      if(onFrame) { await onFrame(f, prevDataUrl, true); }
+      else { frames.push(prevDataUrl); }
+    } else {
+      // CLEAR FIRST, ALWAYS. drawFrame() paints and does not clear — only
+      // renderComposite() cleared, and this loop bypasses it to avoid recomputing
+      // the frame. Without this every frame accumulated on top of the previous
+      // ones and the export came out as overlapping doubled text.
+      ctx.clearRect(0, 0, width, height);
+      renderer.drawFrame(ctx, frame, spec);            // no-op when frame is null (a gap)
+      const dataUrl = canvas.toDataURL('image/png');
+      encoded++;
+      prevSig = sig; prevDataUrl = dataUrl;
+      if(onFrame) { await onFrame(f, dataUrl, false); }
+      else { frames.push(dataUrl); }
+    }
 
     if(onProgress) onProgress(f / totalFrames);
-    if(f % 5 === 0) await new Promise(r => setTimeout(r, 0)); // keep UI responsive
+    // Time-based yield instead of every 5th frame. Nested setTimeout(0) is
+    // clamped to ~4ms, so a fixed every-5-frames yield cost ~1.4s over 1800
+    // frames for no benefit; yielding on a ~40ms cadence keeps the UI responsive
+    // at a fraction of that.
+    if(Date.now() - lastYield > 40) {
+      await new Promise(r => setTimeout(r, 0));
+      lastYield = Date.now();
+    }
   }
   if(onProgress) onProgress(1);
 
   const rendered = onFrame ? totalFrames : frames.length;
-  console.log('[Export] Rendered ' + rendered + ' frames (' + (rendered - emptyCount) + ' with captions, ' + emptyCount + ' empty gaps)');
+  const secs = (Date.now() - t0) / 1000;
+  console.log('[Export] Rendered ' + rendered + ' frames in ' + secs.toFixed(1) + 's ' +
+              '(' + encoded + ' encoded, ' + reused + ' reused = ' +
+              (rendered ? Math.round(reused / rendered * 100) : 0) + '% saved, ' +
+              emptyCount + ' empty gaps)');
   if(rendered > 0 && emptyCount === rendered) {
     console.warn('[Export] ⚠️ No frame had an active caption — check that group times overlap the exported range.');
   }

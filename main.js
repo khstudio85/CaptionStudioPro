@@ -759,6 +759,93 @@ function _encoderPlans(cfg) {
   return plans;
 }
 
+// ═══════════════════════════════════════════════════════════
+// TRANSPARENT (ALPHA) EXPORT
+// ═══════════════════════════════════════════════════════════
+// The caption frames are already transparent PNGs, so an alpha export is just an
+// encode that PRESERVES alpha instead of compositing onto a background. H.264
+// cannot carry alpha at all, which is why this needs its own codec path.
+//
+// Codec is chosen from the output extension:
+//   .mov  -> ProRes 4444 (yuva444p10le)  editor-friendly, what Premiere/Resolve/FCP want
+//   .webm -> VP9 (yuva420p)              for web/overlay use
+//   .mov fallback for anything else, since an alpha MP4 is not a thing.
+function _alphaEncoderFor(outputPath) {
+  const ext = String(outputPath || '').toLowerCase().split('.').pop();
+  if(ext === 'webm') {
+    return {
+      name: 'VP9 + alpha (WebM)',
+      vcodec: 'libvpx-vp9',
+      opts: ['-pix_fmt', 'yuva420p', '-b:v', '0', '-crf', '24',
+             '-row-mt', '1', '-cpu-used', '2', '-auto-alt-ref', '0'],
+      acodec: 'libopus', abitrate: '160k'
+    };
+  }
+  return {
+    name: 'ProRes 4444 + alpha (MOV)',
+    vcodec: 'prores_ks',
+    // profile 4444 is the one that carries an alpha plane; -alpha_bits 16 keeps
+    // the soft glow/shadow edges from being quantised into banding.
+    opts: ['-profile:v', '4444', '-pix_fmt', 'yuva444p10le',
+           '-alpha_bits', '16', '-vendor', 'apl0', '-qscale:v', '9'],
+    acodec: 'pcm_s16le', abitrate: null
+  };
+}
+
+// Encode the PNG sequence straight through, alpha intact. No video input and no
+// overlay filter — there is nothing to composite onto.
+function _runAlphaEncode(event, opts) {
+  const { tmpDir, videoPath, outputPath, width, height, fps, fpsExact, trimIn, trimOut } = opts;
+  return new Promise((resolve, reject) => {
+    const rate = fpsExact || String(fps);
+    const plan = _alphaEncoderFor(outputPath);
+    const command = ffmpeg();
+    currentExportCommand = command;
+
+    command.input(path.join(tmpDir, 'frame_%06d.png'));
+    command.inputOptions(['-framerate', rate, '-f', 'image2']);
+
+    // Carry the source audio when there is any, so the overlay drops onto a
+    // timeline already in sync.
+    let hasAudioInput = false;
+    if(videoPath) {
+      command.input(videoPath);
+      if(trimIn && trimIn > 0) command.inputOptions(['-ss', String(trimIn)]);
+      if(trimOut && trimOut !== null) command.inputOptions(['-t', String(trimOut - (trimIn || 0))]);
+      hasAudioInput = true;
+    }
+
+    // scale only (no overlay). format is set by -pix_fmt below.
+    command.complexFilter('[0:v]scale=' + width + ':' + height + ':flags=lanczos,setsar=1[out]');
+
+    const outputOpts = ['-map', '[out]', '-r', rate, '-fps_mode', 'cfr'];
+    if(hasAudioInput) outputOpts.push('-map', '1:a?', '-shortest');
+
+    command.videoCodec(plan.vcodec).outputOptions(outputOpts.concat(plan.opts));
+    if(hasAudioInput && plan.acodec) {
+      command.audioCodec(plan.acodec);
+      if(plan.abitrate) command.audioBitrate(plan.abitrate);
+    }
+
+    console.log('[Export] Alpha encoder:', plan.name, '|', width + 'x' + height + '@' + rate);
+    command
+      .on('start', (cmdLine) => console.log('[FFmpeg CMD]', cmdLine))
+      .on('progress', (progress) => {
+        const percent = 15 + Math.min(83, (progress.percent || 0) * 0.83);
+        event.sender.send('export-progress', {
+          percent: percent, status: 'Encoding transparent video', phase: 'render',
+          timemark: progress.timemark || '00:00:00', fps: progress.currentFps || 0
+        });
+      })
+      .on('end', () => { currentExportCommand = null; resolve({ success: true, encoder: plan.name }); })
+      .on('error', (err, stdout, stderr) => {
+        currentExportCommand = null;
+        reject({ message: err.message, stderr: stderr });
+      })
+      .save(outputPath);
+  });
+}
+
 // Run ONE encoder plan. Never touches tmpDir — the caller owns cleanup so a
 // failed plan can be retried with the rendered frames still on disk.
 function _runEncodePlan(event, opts, plan) {
@@ -870,22 +957,69 @@ async function _encodeCaptionVideo(event, opts) {
   const quality = opts.quality || 'high';
   const useGPU = opts.useGPU !== false;
 
-  // Audio-only project (captions over a solid colour background)?
+  // ── BACKGROUND MODE (§5) ──────────────────────────────────────────────
+  //   'video'       composite the captions over the footage        (default)
+  //   'solid'       composite over a flat colour
+  //   'transparent' no background at all — keep the alpha channel
+  // 'auto' resolves to solid when the source carries no video stream, which is
+  // what an audio-only project needs.
   const hasVideo = await _hasVideoStream(opts.videoPath);
+  let bgMode = opts.bgMode || 'auto';
+  if(bgMode === 'auto') bgMode = hasVideo ? 'video' : 'solid';
+  if(bgMode === 'video' && !hasVideo) {
+    console.warn('[Export] bgMode=video but the source has no video stream — using solid.');
+    bgMode = 'solid';
+  }
+
+  if(bgMode === 'transparent') {
+    event.sender.send('export-progress', {
+      percent: 15, status: 'Encoding transparent video...', phase: 'merge'
+    });
+    console.log('[Export] Transparent export from', tmpDir, '→', opts.outputPath,
+                width + 'x' + height + '@' + (fpsExact || fps));
+    try {
+      const res = await _runAlphaEncode(event, {
+        tmpDir: tmpDir, videoPath: opts.videoPath, outputPath: opts.outputPath,
+        width: width, height: height, fps: fps, fpsExact: fpsExact,
+        trimIn: opts.trimIn, trimOut: opts.trimOut
+      });
+      _cleanupDir(tmpDir);
+      let fileSize = 0;
+      try { fileSize = fs.statSync(opts.outputPath).size; } catch(_) {}
+      const totalTime = (Date.now() - exportStartTime) / 1000;
+      console.log('[Export] SUCCESS via ' + res.encoder + ' in ' + totalTime.toFixed(1) + 's, ' +
+                  (fileSize / 1048576).toFixed(2) + 'MB');
+      event.sender.send('export-progress', {
+        percent: 100, status: 'Complete!', phase: 'complete',
+        fileSize: fileSize, totalTime: totalTime, encoder: res.encoder
+      });
+      return { success: true, outputPath: opts.outputPath, fileSize: fileSize,
+               totalTime: totalTime, encoder: res.encoder };
+    } catch(err) {
+      _cleanupDir(tmpDir);
+      const msg = (err && err.message) || 'Transparent encode failed';
+      console.error('[Export] alpha encode failed:', msg);
+      if(err && err.stderr) console.error('[FFmpeg STDERR]', String(err.stderr).slice(-2000));
+      event.sender.send('export-progress', { percent: 0, status: 'Error: ' + msg, phase: 'error' });
+      throw { success: false, error: msg, stderr: err && err.stderr };
+    }
+  }
 
   event.sender.send('export-progress', {
     percent: 15, status: 'Merging video + audio + captions...', phase: 'merge'
   });
   console.log('[Export] Encoding from', tmpDir, '→', opts.outputPath,
               width + 'x' + height + '@' + (fpsExact || fps),
-              '| quality', quality, '| source has video:', hasVideo);
+              '| quality', quality, '| bgMode', bgMode, '| source has video:', hasVideo);
 
   const plans = _encoderPlans({ quality: quality, useGPU: useGPU, width: width, height: height, fps: fps });
   const planOpts = {
     tmpDir: tmpDir, videoPath: opts.videoPath, outputPath: opts.outputPath,
     width: width, height: height, fps: fps, fpsExact: fpsExact,
     trimIn: opts.trimIn, trimOut: opts.trimOut,
-    bgColor: opts.bgColor || '#000000', hasVideo: hasVideo
+    // 'solid' deliberately ignores any video stream so the caption sits on a flat
+    // colour even when footage is loaded.
+    bgColor: opts.bgColor || '#000000', hasVideo: (bgMode === 'video')
   };
 
   let lastErr = null;
@@ -997,12 +1131,29 @@ ipcMain.handle('export-init', async () => {
   }
 });
 
-ipcMain.handle('export-add-frame', async (event, { id, index, dataUrl }) => {
+ipcMain.handle('export-add-frame', async (event, { id, index, dataUrl, repeatPrevious }) => {
   try {
     const sess = exportSessions[id];
     if(!sess) return { success: false, error: 'Unknown export session: ' + id };
     const framePath = path.join(sess.dir, 'frame_' + String(index).padStart(6, '0') + '.png');
+
+    // A repeat frame is byte-identical to the one before it (the renderer proved
+    // that with CaptionEngine.frameSignature, so this is lossless). Copy the
+    // previous file instead of shipping ~100KB of base64 through IPC and
+    // re-decoding it — the renderer also skipped drawing and encoding it.
+    if(repeatPrevious) {
+      if(!sess.lastFramePath) {
+        return { success: false, error: 'repeatPrevious on frame ' + index + ' with no previous frame' };
+      }
+      fs.copyFileSync(sess.lastFramePath, framePath);
+      sess.lastFramePath = framePath;
+      sess.repeated = (sess.repeated || 0) + 1;
+      return { success: true, repeated: true };
+    }
+
     fs.writeFileSync(framePath, dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
+    sess.lastFramePath = framePath;
+    sess.written = (sess.written || 0) + 1;
     return { success: true };
   } catch(err) {
     return { success: false, error: err.message };
@@ -1013,17 +1164,22 @@ ipcMain.handle('export-encode', async (event, options) => {
   const {
     id, videoPath, outputPath,
     resolution, fps = 30, fpsExact = null, trimIn, trimOut,
-    quality = 'high', useGPU = true, bgColor = '#000000'
+    quality = 'high', useGPU = true, bgColor = '#000000', bgMode = 'auto'
   } = options;
 
   const sess = exportSessions[id];
   if(!sess) return { success: false, error: 'Unknown export session: ' + id };
+  const _w = sess.written || 0, _r = sess.repeated || 0;
+  if(_w + _r > 0) {
+    console.log('[Export] Frames: ' + _w + ' encoded, ' + _r + ' reused (' +
+                Math.round(_r / (_w + _r) * 100) + '% of PNG encoding skipped)');
+  }
 
   const [width, height] = resolution.split('x').map(Number);
   try {
     const result = await _encodeCaptionVideo(event, {
       tmpDir: sess.dir, videoPath, outputPath, width, height,
-      fps, fpsExact, trimIn, trimOut, quality, useGPU, bgColor
+      fps, fpsExact, trimIn, trimOut, quality, useGPU, bgColor, bgMode
     });
     delete exportSessions[id];   // dir already cleaned by _encodeCaptionVideo
     return result;

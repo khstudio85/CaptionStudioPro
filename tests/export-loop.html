@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Export loop regression test</title>
+<!--
+  EXPORT FRAME-LOOP REGRESSION TEST
+
+  Run it: serve the repo root over http and open /tests/export-loop.html
+
+  This exists because of a real shipped bug. The export loop was optimised to
+  skip re-encoding unchanged frames, and in doing so it replaced
+  renderComposite() (which clears the canvas) with a direct drawFrame() call
+  (which does not). Every frame then accumulated on top of the previous ones and
+  exports came out as overlapping doubled text.
+
+  The perf test at the time did not catch it because it replicated the same
+  omission. So the assertion here is deliberately independent of how the loop is
+  written:
+
+      a frame produced by the LOOP must be byte-identical to the same frame
+      rendered on its own, from a clean canvas.
+
+  That holds no matter how the loop caches, dedupes or reorders work, and it
+  fails loudly on any state leaking between frames.
+-->
+<style>
+  body { margin:0; background:#0d0d10; color:#c8c8d0; font:12px ui-monospace, monospace; padding:16px; }
+  pre { white-space:pre-wrap; margin:0; }
+  h1 { font:600 15px ui-monospace; color:#9fd; margin:0 0 12px; }
+  #summary { margin:14px 0; padding:10px 12px; border-radius:6px; font-weight:700; }
+  .ok  { background:rgba(79,214,122,0.12); border:1px solid rgba(79,214,122,0.4); color:#4fd67a; }
+  .bad { background:rgba(255,92,92,0.12); border:1px solid rgba(255,92,92,0.4); color:#ff5c5c; }
+</style>
+<h1>Export loop — no state may leak between frames</h1>
+<div id="summary">running…</div>
+<pre id="log"></pre>
+<script src="../caption-engine.js"></script>
+<script>
+const out = []; let fails = 0, checks = 0;
+function check(ok, msg){ checks++; if(!ok)fails++; out.push((ok?'  PASS  ':'  FAIL  ')+msg); }
+function head(m){ out.push(''); out.push('== '+m+' =='); }
+
+const W = 540, H = 960;                       // small for speed; the bug is scale-free
+const LAYERS = [];
+for (let L = 0; L < 4; L++) {
+  const words = ['this','is','caption','layer',String(L+1)];
+  LAYERS.push({ start: L*2, end: L*2+1.6, words: words,
+    wordTimes: words.map((w,i)=>({ start: L*2+i*0.3, end: L*2+i*0.3+0.3 })) });
+}
+function spec(styleN){
+  return new CaptionEngine.CaptionStyleSpec({
+    fontFamily:'Arial', fontWeight:900, fontSize:90, color:'#12c98a',
+    canvasWidth:1080, canvasHeight:1920, positionX:50, positionY:70,
+    maxWidth:85, maxWordsPerLine:6, animationStyle:styleN,
+    strokeEnabled:true, strokeWidth:6, strokeColor:'#101010', letterSpacing:2,
+    highlightEnabled:true, highlightBgColor:'#FFE500', highlightPadH:8, highlightPadV:5, highlightRadius:6,
+    shadows:[{dist:6,angle:135,size:16,spread:4,opacity:80,color:'#000000'}],
+    glowEnabled:true, glowColor:'#ff7a1a', glowIntensity:14, glowSpread:26,
+    styleProps:{}
+  });
+}
+const renderer = new CaptionEngine.CaptionRenderer();
+
+// WARM-UP. The first canvas text render on a page can differ from later ones
+// while the font is still resolving, which showed up as "frame 0 of the FIRST
+// style tested differs" — a test artifact, not a renderer fault. Force one
+// throwaway render per style (and await document.fonts) before measuring.
+function warmUp(){
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  [0,1,3,7].forEach(st => {
+    const sp = spec(st);
+    cx.clearRect(0,0,W,H);
+    renderer.drawFrame(cx, renderer.computeFrame(sp, LAYERS, 0.4, W, H), sp);
+    c.toDataURL('image/png');
+  });
+}
+
+// A FRESH canvas each time — the independent reference for one timestamp.
+function referenceFrame(sp, t){
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  const fr = renderer.computeFrame(sp, LAYERS, t, W, H);
+  renderer.drawFrame(cx, fr, sp);
+  return c.toDataURL('image/png');
+}
+
+// The loop exactly as the exporter runs it: ONE reused canvas, dedupe by
+// signature, reusing the previous PNG for unchanged frames.
+function loopFrames(sp, fps, total){
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  const outFrames = [];
+  let prevSig = null, prevPng = null, encoded = 0, reused = 0;
+  for (let f = 0; f < total; f++){
+    const t = f / fps;
+    const fr = renderer.computeFrame(sp, LAYERS, t, W, H);
+    const sig = CaptionEngine.frameSignature(fr);
+    if (sig === prevSig && prevPng !== null){
+      reused++; outFrames.push(prevPng);
+    } else {
+      cx.clearRect(0, 0, W, H);
+      renderer.drawFrame(cx, fr, sp);
+      const png = c.toDataURL('image/png');
+      encoded++; prevSig = sig; prevPng = png;
+      outFrames.push(png);
+    }
+  }
+  return { frames: outFrames, encoded: encoded, reused: reused };
+}
+
+(async function(){
+try { await document.fonts.ready; } catch(_) {}
+warmUp();
+
+head('1. LOOP OUTPUT == INDEPENDENT RENDER  (catches frame accumulation)');
+const fps = 15, total = 60;
+[0,1,3,7].forEach(st => {
+  const sp = spec(st);
+  const lp = loopFrames(sp, fps, total);
+  let mismatch = -1;
+  for (let f = 0; f < total; f++){
+    if (lp.frames[f] !== referenceFrame(sp, f / fps)) { mismatch = f; break; }
+  }
+  check(mismatch < 0,
+    'style ' + st + '  ' + total + ' frames (' + lp.encoded + ' encoded, ' + lp.reused + ' reused)' +
+    (mismatch < 0 ? '  every frame matches a clean render'
+                  : '   <<< FRAME ' + mismatch + ' DIFFERS from a clean render — state leaked'));
+});
+
+head('2. A GAP MUST BE FULLY EMPTY');
+{
+  const sp = spec(7);
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const cx = c.getContext('2d');
+  // draw a real caption first, then a gap timestamp, on the SAME canvas
+  cx.clearRect(0,0,W,H);
+  renderer.drawFrame(cx, renderer.computeFrame(sp, LAYERS, 0.8, W, H), sp);
+  cx.clearRect(0,0,W,H);
+  renderer.drawFrame(cx, renderer.computeFrame(sp, LAYERS, 1.9, W, H), sp);  // between layers
+  const d = cx.getImageData(0,0,W,H).data;
+  let ink = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 6) ink++;
+  check(ink === 0, 'gap frame after a drawn caption has ' + ink + ' inked px (must be 0)');
+}
+
+head('3. DEDUPE IS LOSSLESS  (reused frame == what would have been drawn)');
+{
+  const sp = spec(1);
+  const lp = loopFrames(sp, fps, total);
+  let bad = 0, reusedPairs = 0;
+  let prevSig = null;
+  for (let f = 0; f < total; f++){
+    const fr = renderer.computeFrame(sp, LAYERS, f / fps, W, H);
+    const sig = CaptionEngine.frameSignature(fr);
+    if (sig === prevSig){ reusedPairs++; if (lp.frames[f] !== referenceFrame(sp, f / fps)) bad++; }
+    prevSig = sig;
+  }
+  check(reusedPairs > 0 && bad === 0,
+    reusedPairs + ' reused frame(s) checked against a clean render, ' + bad + ' wrong (must be 0)');
+}
+
+document.getElementById('log').textContent = out.join('\n');
+const sum = document.getElementById('summary');
+sum.className = fails === 0 ? 'ok' : 'bad';
+sum.textContent = fails === 0
+  ? 'ALL ' + checks + ' CHECKS PASSED — the export loop leaks no state between frames'
+  : fails + ' of ' + checks + ' CHECKS FAILED';
+window.__LOOP = { fails: fails, checks: checks, log: out.join('\n') };
+})();
+</script>
